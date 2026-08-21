@@ -1,5 +1,7 @@
 """Embedding provider abstraction — decouples the application from any
-specific embedding API. Configured via EMBEDDING_PROVIDER env var.
+specific embedding API. Shared between apps/api (ingestion) and
+apps/ai-orchestrator (query-time retrieval), so both embed with the same
+provider/model/dimension.
 
 Providers must satisfy the EmbeddingProvider protocol:
   embed_texts()  — batch embed documents/chunks
@@ -125,24 +127,24 @@ class DummyEmbeddingProvider:
         return self._dimension
 
 
-def get_embedding_provider() -> EmbeddingProvider:
-    """Factory — returns the configured embedding provider."""
-    from app.core.config import settings
+def get_embedding_provider(
+    provider: str, *, api_key: str = "", model: str = "text-embedding-3-small", dimension: int = 1536,
+) -> EmbeddingProvider:
+    """Factory — returns the configured embedding provider.
 
-    if settings.embedding_provider == "dummy" or settings.embedding_provider == "mock":
-        return DummyEmbeddingProvider(dimension=settings.embedding_dimension)
+    Takes config values explicitly (rather than importing a settings object)
+    since this module is shared by services with separate config schemas.
+    """
+    if provider in ("dummy", "mock"):
+        return DummyEmbeddingProvider(dimension=dimension)
 
-    if settings.embedding_provider == "openai":
-        if not settings.openai_api_key:
+    if provider == "openai":
+        if not api_key:
             logger.warning("OPENAI_API_KEY is not set — falling back to DummyEmbeddingProvider for dev mode.")
-            return DummyEmbeddingProvider(dimension=settings.embedding_dimension)
-        return OpenAiEmbeddingProvider(
-            api_key=settings.openai_api_key,
-            model=settings.openai_embedding_model,
-        )
+            return DummyEmbeddingProvider(dimension=dimension)
+        return OpenAiEmbeddingProvider(api_key=api_key, model=model)
 
-    if settings.embedding_provider == "local":
+    if provider == "local":
         return LocalEmbeddingProvider()
 
-    raise ValueError(f"Unknown embedding provider: {settings.embedding_provider}")
-
+    raise ValueError(f"Unknown embedding provider: {provider}")

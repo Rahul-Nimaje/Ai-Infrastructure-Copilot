@@ -2,6 +2,9 @@
 the document_chunks table with mandatory organization_id filtering for
 multi-tenant isolation.
 
+Shared between apps/api (ingestion + search) and apps/ai-orchestrator
+(query-time retrieval), since both talk to the same document_chunks table.
+
 Designed behind a VectorStore protocol so it can be replaced with Qdrant,
 Pinecone, Weaviate, or OpenSearch without touching RAG business logic.
 """

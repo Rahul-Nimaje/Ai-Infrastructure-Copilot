@@ -19,3 +19,7 @@ setup_service "apps/api"
 setup_service "apps/ai-orchestrator"
 
 echo "Done. Activate with: source apps/api/.venv/bin/activate (or apps/ai-orchestrator)"
+echo
+echo "Note: running Network Discovery's Full/Standard scans outside Docker also"
+echo "requires these host binaries on PATH (already installed in the api Docker"
+echo "image's apt-get layer): nmap, ssh (openssh-client), sshpass, snmpget/snmpwalk/snmpbulkwalk (snmp package)."

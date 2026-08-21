@@ -29,6 +29,7 @@ celery_app.conf.update(
     # Task routing
     task_routes={
         "app.workers.tasks.document_tasks.*": {"queue": "documents"},
+        "app.workers.tasks.discovery_tasks.*": {"queue": "discovery"},
     },
 )
 

@@ -26,6 +26,15 @@ export interface ModalProps {
   size?: "sm" | "md" | "lg" | "xl";
   isLoading?: boolean;
   closeOnOverlayClick?: boolean;
+  /**
+   * Radix's modal focus-trap assumes all interactive content lives inside
+   * DialogContent's own DOM subtree. Any content this modal renders in its
+   * own portal (e.g. an AsyncSelect dropdown) sits outside that subtree, so
+   * Radix keeps yanking focus back — clicks land, but the search input never
+   * actually receives focus. Pass `modal={false}` for any modal that hosts
+   * an AsyncSelect (or similar portaled popover) to disable that trap.
+   */
+  modal?: boolean;
   footer?: React.ReactNode;
   className?: string;
   children: React.ReactNode;
@@ -39,6 +48,7 @@ export function Modal({
   size = "md",
   isLoading = false,
   closeOnOverlayClick = true,
+  modal = true,
   footer,
   className,
   children,
@@ -46,7 +56,7 @@ export function Modal({
   const preventClose = isLoading || !closeOnOverlayClick;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={modal}>
       <DialogContent
         className={cn(SIZE_CLASSES[size], className)}
         onPointerDownOutside={(e) => {

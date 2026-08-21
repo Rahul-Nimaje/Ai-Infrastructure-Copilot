@@ -12,10 +12,15 @@ import {
   Clock,
   RefreshCw,
   History,
+  Activity,
+  ShieldCheck,
+  Zap,
+  Radar,
   type LucideIcon,
 } from "lucide-react";
 
 // ─── Device detail drawer tabs ────────────────────────────────
+// Order matches the full-inventory-scan spec's required tab list exactly.
 export interface DeviceTab {
   id: string;
   label: string;
@@ -25,15 +30,17 @@ export interface DeviceTab {
 export const DEVICE_DETAIL_TABS: DeviceTab[] = [
   { id: "overview", label: "Overview", icon: Info },
   { id: "hardware", label: "Hardware", icon: Server },
-  { id: "os", label: "Operating System", icon: Monitor },
   { id: "cpu", label: "CPU", icon: Cpu },
   { id: "memory", label: "Memory", icon: Layers },
   { id: "storage", label: "Storage", icon: HardDrive },
+  { id: "os", label: "Operating System", icon: Monitor },
   { id: "network", label: "Network", icon: Network },
   { id: "software", label: "Software", icon: Package },
   { id: "services", label: "Services", icon: Settings },
-  { id: "ports", label: "Open Ports", icon: Eye },
-  { id: "history", label: "History", icon: Clock },
+  { id: "processes", label: "Processes", icon: Activity },
+  { id: "ports", label: "Ports", icon: Eye },
+  { id: "security", label: "Security", icon: ShieldCheck },
+  { id: "scan_history", label: "Scan History", icon: Clock },
   { id: "ip_history", label: "IP History", icon: RefreshCw },
   { id: "inventory_history", label: "Inventory History", icon: History },
 ];
@@ -49,11 +56,31 @@ export const DEVICE_TYPE_OPTIONS = [
   { value: "Printer", label: "Printer" },
 ] as const;
 
-// ─── Scan type / discovery profile options ────────────────────
-export const SCAN_TYPE_OPTIONS = [
-  { value: "ping_sweep", label: "Ping Sweep (Fast Discovery)" },
-  { value: "port_scan", label: "Full Port Probe & Services" },
-  { value: "os_fingerprint", label: "Deep Scan (OS + Hardware Detection)" },
+// ─── Scan mode buttons (section 12) — wire value matches backend ScanMode ──
+export interface ScanModeOption {
+  value: "quick" | "standard" | "full";
+  label: string;
+  description: string;
+  icon: LucideIcon;
+}
+
+export const SCAN_MODE_OPTIONS: ScanModeOption[] = [
+  { value: "quick", label: "Quick Scan", description: "IP, hostname, MAC, vendor, status only", icon: Zap },
+  { value: "standard", label: "Standard Scan", description: "+ OS, open ports, services", icon: Radar },
+  { value: "full", label: "Full Scan", description: "+ hardware, software, security, processes", icon: ShieldCheck },
+];
+
+// ─── Scan status filter options (device.scan_status) ──────────
+export const SCAN_STATUS_FILTER_OPTIONS = [
+  { value: "", label: "All Scan Statuses" },
+  { value: "discovered", label: "Discovered" },
+  { value: "identifying", label: "Identifying" },
+  { value: "scanning", label: "Scanning" },
+  { value: "completed", label: "Completed" },
+  { value: "partial", label: "Partial" },
+  { value: "failed", label: "Failed" },
+  { value: "credentials_required", label: "Credentials Required" },
+  { value: "offline", label: "Offline" },
 ] as const;
 
 // ─── Port labels ──────────────────────────────────────────────
@@ -88,6 +115,6 @@ export const DEVICE_ICON_COLOR: Record<string, string> = {
   workstation: "text-blue-500",
 };
 
-// ─── Default subnet ───────────────────────────────────────────
+// ─── Default subnet / scan mode ───────────────────────────────
 export const DEFAULT_TARGET_RANGE = "10.20.4.0/24";
-export const DEFAULT_SCAN_TYPE = "ping_sweep";
+export const DEFAULT_SCAN_MODE = "standard" as const;

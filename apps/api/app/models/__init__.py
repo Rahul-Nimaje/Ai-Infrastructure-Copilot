@@ -5,7 +5,25 @@ from app.models.audit import AuditLog  # noqa: F401
 from app.models.credential import Credential  # noqa: F401
 from app.models.event import Event, EventLogEntry  # noqa: F401
 from app.models.infrastructure import InfrastructureInventory, Server  # noqa: F401
-from app.models.device import Device, NetworkScan, DeviceScanHistory, DeviceStatusHistory, DeviceIPHistory  # noqa: F401
+from app.models.device import (  # noqa: F401
+    Device,
+    NetworkScan,
+    DeviceInventory,
+    DeviceNetworkInterface,
+    DeviceStorage,
+    DeviceMemory,
+    DeviceProcessor,
+    DeviceInstalledSoftware,
+    DeviceService,
+    DeviceInventoryHistory,
+    DeviceScanHistory,
+    DeviceStatusHistory,
+    DeviceIPHistory,
+    DevicePartition,
+    DeviceProcess,
+    DeviceSecurity,
+    DevicePort,
+)
 from app.models.knowledge import Document, DocumentChunk, RagQueryLog, RagEvaluation  # noqa: F401
 from app.models.organization import Organization  # noqa: F401
 from app.models.rbac import Permission, Role, RolePermission, UserRole  # noqa: F401

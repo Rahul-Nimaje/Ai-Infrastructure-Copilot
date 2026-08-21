@@ -227,8 +227,14 @@ export function AsyncSelect(props: AsyncSelectProps) {
         createPortal(
           <div
             ref={panelRef}
-            style={{ position: "fixed", top: panelRect.top, left: panelRect.left, width: panelRect.width }}
-            className="z-[60] rounded-md border border-border bg-popover text-popover-foreground shadow-lg"
+            style={{
+              position: "fixed",
+              top: panelRect.top,
+              left: panelRect.left,
+              width: panelRect.width,
+              pointerEvents: "auto",
+            }}
+            className="z-[60] rounded-md border border-border bg-card text-card-foreground shadow-lg"
           >
             <div className="flex items-center gap-2 border-b border-border p-2">
               <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />

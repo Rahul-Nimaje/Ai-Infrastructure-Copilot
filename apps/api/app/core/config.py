@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://copilot:copilot@localhost:5432/copilot"
+    database_url: str = "postgresql+asyncpg://copilot:copilot@localhost:5434/copilot"
     redis_url: str = "redis://localhost:6379/0"
 
     jwt_secret: str = "dev-secret-change-me"
@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     ai_orchestrator_url: str = "http://localhost:8001"
 
     cors_origins: list[str] = ["http://localhost:3000"]
+
+    # ── Network Discovery / Full Inventory Scan ────────────────────────
+    # Caps simultaneous WinRM/SSH/SNMP connections per organization during a
+    # Full scan's credentialed collection phase (section 11/16 of the
+    # feature plan) — protects the target fleet, independent of Celery's
+    # own worker-level concurrency which protects this server's resources.
+    discovery_max_concurrent_inventory: int = 5
 
     # ── RAG / Knowledge Base ────────────────────────────────────────────
     embedding_provider: str = "openai"  # openai | local

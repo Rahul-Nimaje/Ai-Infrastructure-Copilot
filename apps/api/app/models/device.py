@@ -78,6 +78,11 @@ class Device(Base):
     auth_success: Mapped[bool] = mapped_column(default=False)
     auth_error: Mapped[str | None] = mapped_column(Text, default=None)
 
+    # Inventory lifecycle (section 9) and identification confidence (section 2)
+    scan_status: Mapped[str | None] = mapped_column(String(30), default="discovered", index=True)
+    identification_confidence: Mapped[str | None] = mapped_column(String(20), default=None)  # confirmed | unverified | unknown
+    identification_method: Mapped[str | None] = mapped_column(String(50), default=None)  # snmp | winrm | ssh | smb | port_heuristic | hostname_heuristic
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
@@ -86,7 +91,7 @@ class Device(Base):
     scan_history: Mapped[list["DeviceScanHistory"]] = relationship("DeviceScanHistory", back_populates="device", cascade="all, delete-orphan")
     status_history: Mapped[list["DeviceStatusHistory"]] = relationship("DeviceStatusHistory", back_populates="device", cascade="all, delete-orphan")
     ip_history: Mapped[list["DeviceIPHistory"]] = relationship("DeviceIPHistory", back_populates="device", cascade="all, delete-orphan")
-    
+
     inventory: Mapped["DeviceInventory"] = relationship("DeviceInventory", back_populates="device", uselist=False, cascade="all, delete-orphan")
     network_interfaces: Mapped[list["DeviceNetworkInterface"]] = relationship("DeviceNetworkInterface", back_populates="device", cascade="all, delete-orphan")
     storage_devices: Mapped[list["DeviceStorage"]] = relationship("DeviceStorage", back_populates="device", cascade="all, delete-orphan")
@@ -95,6 +100,9 @@ class Device(Base):
     installed_software_list: Mapped[list["DeviceInstalledSoftware"]] = relationship("DeviceInstalledSoftware", back_populates="device", cascade="all, delete-orphan")
     services_list: Mapped[list["DeviceService"]] = relationship("DeviceService", back_populates="device", cascade="all, delete-orphan")
     inventory_history: Mapped[list["DeviceInventoryHistory"]] = relationship("DeviceInventoryHistory", back_populates="device", cascade="all, delete-orphan")
+    processes: Mapped[list["DeviceProcess"]] = relationship("DeviceProcess", back_populates="device", cascade="all, delete-orphan")
+    security: Mapped["DeviceSecurity"] = relationship("DeviceSecurity", back_populates="device", uselist=False, cascade="all, delete-orphan")
+    ports: Mapped[list["DevicePort"]] = relationship("DevicePort", back_populates="device", cascade="all, delete-orphan")
 
 
 class DeviceInventory(Base):
@@ -151,6 +159,9 @@ class DeviceNetworkInterface(Base):
     gateway: Mapped[str | None] = mapped_column(String(45), default=None)
     dhcp_enabled: Mapped[bool | None] = mapped_column(default=None)
     status: Mapped[str | None] = mapped_column(String(50), default="up")
+    speed_mbps: Mapped[int | None] = mapped_column(Integer, default=None)
+    duplex: Mapped[str | None] = mapped_column(String(20), default=None)
+    interface_type: Mapped[str | None] = mapped_column(String(50), default=None)  # ethernet | loopback | vlan | wifi
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -169,10 +180,14 @@ class DeviceStorage(Base):
     capacity_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
     free_space_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
     partitions: Mapped[list | None] = mapped_column(JSONB, default=None)
+    interface_type: Mapped[str | None] = mapped_column(String(50), default=None)  # SATA | NVMe | SAS | USB
+    media_type: Mapped[str | None] = mapped_column(String(50), default=None)  # SSD | HDD | unknown
+    health_status: Mapped[str | None] = mapped_column(String(50), default=None)  # OK | Warning | Predict-Failure
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships
     device: Mapped["Device"] = relationship("Device", back_populates="storage_devices")
+    partition_entries: Mapped[list["DevicePartition"]] = relationship("DevicePartition", back_populates="storage", cascade="all, delete-orphan")
 
 
 class DeviceMemory(Base):
@@ -185,7 +200,8 @@ class DeviceMemory(Base):
     total_ram_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
     available_ram_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
     memory_slots: Mapped[int | None] = mapped_column(default=None)
-    ram_modules: Mapped[list | None] = mapped_column(JSONB, default=None)
+    ram_modules: Mapped[list | None] = mapped_column(JSONB, default=None)  # [{"slot","manufacturer","capacity_bytes","speed_mhz"}]
+    configured_speed_mhz: Mapped[int | None] = mapped_column(Integer, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -204,6 +220,8 @@ class DeviceProcessor(Base):
     cores: Mapped[int | None] = mapped_column(default=None)
     logical_processors: Mapped[int | None] = mapped_column(default=None)
     current_speed_mhz: Mapped[int | None] = mapped_column(default=None)
+    max_speed_mhz: Mapped[int | None] = mapped_column(Integer, default=None)
+    socket_designation: Mapped[str | None] = mapped_column(String(50), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -305,3 +323,117 @@ class DeviceIPHistory(Base):
 
     # Relationships
     device: Mapped["Device"] = relationship("Device", back_populates="ip_history")
+
+
+class DevicePartition(Base):
+    """Normalized disk partitions — DeviceStorage.partitions (JSONB) stays for
+    the simple one-disk-one-partition case (typical Windows logical disk);
+    this table is populated for the detailed multi-partition case (Linux
+    lsblk/df), enabling per-partition filtering/history that JSONB can't."""
+
+    __tablename__ = "device_partitions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    device_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    storage_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("device_storage.id", ondelete="CASCADE"), default=None)
+
+    mount_point: Mapped[str | None] = mapped_column(String(255), default=None)
+    device_node: Mapped[str | None] = mapped_column(String(100), default=None)  # e.g. /dev/sda1, C:
+    filesystem_type: Mapped[str | None] = mapped_column(String(50), default=None)  # ext4 | xfs | ntfs
+    label: Mapped[str | None] = mapped_column(String(100), default=None)
+    capacity_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    used_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    free_space_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    device: Mapped["Device"] = relationship("Device")
+    storage: Mapped["DeviceStorage"] = relationship("DeviceStorage", back_populates="partition_entries")
+
+
+class DeviceProcess(Base):
+    """Point-in-time process snapshot — delete-all-for-device then bulk
+    insert on each Full scan, same pattern already used for DeviceProcessor/
+    DeviceStorage rather than a diffed/historized table."""
+
+    __tablename__ = "device_processes"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    device_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+
+    pid: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    command_line: Mapped[str | None] = mapped_column(Text, default=None)
+    user_name: Mapped[str | None] = mapped_column(String(100), default=None)
+    cpu_percent: Mapped[float | None] = mapped_column(Numeric(5, 2), default=None)
+    memory_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    status: Mapped[str | None] = mapped_column(String(50), default=None)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    device: Mapped["Device"] = relationship("Device", back_populates="processes")
+
+
+class DeviceSecurity(Base):
+    """1:1 security posture, superset of DeviceInventory's legacy antivirus/
+    bitlocker_status/firewall_status columns (left frozen there for backward
+    compat — collectors write to both during the transition)."""
+
+    __tablename__ = "device_security"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    device_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), unique=True)
+
+    # Windows
+    defender_enabled: Mapped[bool | None] = mapped_column(default=None)
+    defender_signature_version: Mapped[str | None] = mapped_column(String(100), default=None)
+    firewall_enabled: Mapped[bool | None] = mapped_column(default=None)
+    firewall_profiles: Mapped[dict | None] = mapped_column(JSONB, default=None)  # {"domain":true,"private":true,"public":false}
+    bitlocker_status: Mapped[str | None] = mapped_column(String(50), default=None)
+    secure_boot_enabled: Mapped[bool | None] = mapped_column(default=None)
+    antivirus_product: Mapped[str | None] = mapped_column(String(255), default=None)
+    antivirus_up_to_date: Mapped[bool | None] = mapped_column(default=None)
+    pending_updates_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    last_update_installed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+    # Linux
+    selinux_status: Mapped[str | None] = mapped_column(String(50), default=None)  # enforcing | permissive | disabled
+    apparmor_status: Mapped[str | None] = mapped_column(String(50), default=None)
+    ufw_active: Mapped[bool | None] = mapped_column(default=None)
+    iptables_rule_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    ssh_root_login_enabled: Mapped[bool | None] = mapped_column(default=None)
+    ssh_password_auth_enabled: Mapped[bool | None] = mapped_column(default=None)
+
+    raw_details: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    device: Mapped["Device"] = relationship("Device", back_populates="security")
+
+
+class DevicePort(Base):
+    """Normalizes open ports/services (previously only in Device.open_ports
+    JSONB and a nmap-parsed ports_detail list that was discarded after parse
+    and never persisted) so port history/diffing across scans works."""
+
+    __tablename__ = "device_ports"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    device_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    scan_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("network_scans.id", ondelete="SET NULL"), default=None)
+
+    port_number: Mapped[int] = mapped_column(Integer)
+    protocol: Mapped[str] = mapped_column(String(10), default="tcp")
+    service_name: Mapped[str | None] = mapped_column(String(100), default=None)
+    product: Mapped[str | None] = mapped_column(String(255), default=None)
+    version: Mapped[str | None] = mapped_column(String(100), default=None)
+    state: Mapped[str] = mapped_column(String(20), default="open")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    device: Mapped["Device"] = relationship("Device", back_populates="ports")

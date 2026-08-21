@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.rag.retrieval.vector_store import ChunkResult
+from py_shared.rag.vector_store import ChunkResult
 
 
 async def keyword_search(

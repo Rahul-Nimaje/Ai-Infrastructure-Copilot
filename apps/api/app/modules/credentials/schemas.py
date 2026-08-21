@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class CreateCredentialRequest(BaseModel):
     name: str
-    credential_type: str  # winrm | ssh_password | ssh_key | api_key | cloud_iam
+    credential_type: str  # winrm | ssh_password | ssh_key | api_key | cloud_iam | snmp_v2c | snmp_v3
     username: str
     secret: str  # password or private key material; never echoed back
 

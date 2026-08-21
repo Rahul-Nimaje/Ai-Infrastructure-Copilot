@@ -39,9 +39,42 @@ const config: Config = {
       animation: {
         "slide-in-right": "slide-in-right 0.3s ease-out forwards",
       },
+      typography: () => ({
+        DEFAULT: {
+          css: {
+            "--tw-prose-body": "inherit",
+            "--tw-prose-headings": "inherit",
+            "--tw-prose-lead": "inherit",
+            "--tw-prose-bold": "inherit",
+            "--tw-prose-counters": "inherit",
+            "--tw-prose-bullets": "inherit",
+            "--tw-prose-hr": "hsl(var(--border))",
+            "--tw-prose-quotes": "inherit",
+            "--tw-prose-quote-borders": "hsl(var(--border))",
+            "--tw-prose-captions": "inherit",
+            "--tw-prose-code": "inherit",
+            "--tw-prose-th-borders": "hsl(var(--border))",
+            "--tw-prose-td-borders": "hsl(var(--border))",
+            maxWidth: "none",
+            color: "inherit",
+            code: {
+              backgroundColor: "hsl(var(--muted))",
+              borderRadius: "0.25rem",
+              padding: "0.15rem 0.4rem",
+              fontWeight: "500",
+            },
+            "code::before": { content: "none" },
+            "code::after": { content: "none" },
+            pre: {
+              backgroundColor: "hsl(var(--muted))",
+              color: "inherit",
+            },
+          },
+        },
+      }),
     },
   },
-  plugins: [],
+  plugins: [require("@tailwindcss/typography")],
 };
 
 export default config;

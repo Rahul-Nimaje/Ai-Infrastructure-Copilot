@@ -18,6 +18,15 @@ export const STATUS_BADGE_VARIANT: Record<string, BadgeProps["variant"]> = {
   pending: "warning",
   invited: "warning",
   idle: "warning",
+  partial: "warning",
+  credentials_required: "warning",
+
+  // Network Discovery inventory-scan lifecycle (section 9)
+  discovered: "info",
+  identifying: "info",
+  scanning: "info",
+  discovering: "info",
+  cancelled: "muted",
 
   unknown: "muted",
   stopped: "muted",
@@ -39,6 +48,14 @@ export const STATUS_LABELS: Record<string, string> = {
   down: "Down",
   stopped: "Stopped",
   unknown: "Unknown",
+
+  discovered: "Discovered",
+  discovering: "Discovering",
+  identifying: "Identifying",
+  scanning: "Scanning",
+  partial: "Partial",
+  credentials_required: "Credentials Required",
+  cancelled: "Cancelled",
 };
 
 // ─── User status filter options ───────────────────────────────

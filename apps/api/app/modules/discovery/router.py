@@ -1,10 +1,9 @@
 import uuid
 from typing import Any
-from fastapi import APIRouter, Depends, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
-from app.core.db import SessionLocal
 from app.core.security import AccessTokenClaims, require_permission
 from app.dependencies import get_org_db
 from app.models.device import Device
@@ -28,8 +27,22 @@ from app.modules.discovery.schemas import (
     DeviceServiceResponse,
     DeviceSoftwareDetailsResponse,
     DeviceInventoryHistoryResponse,
-    DeviceAllHistoryResponse
+    DeviceAllHistoryResponse,
+    DeviceProcessResponse,
+    DeviceSecurityResponse,
+    DevicePortResponse,
 )
+from py_shared.enums import ScanMode
+
+
+def _enqueue_scan(scan_id: uuid.UUID, organization_id: str, actor_id: str) -> None:
+    from app.workers.tasks.discovery_tasks import run_network_scan_task
+    run_network_scan_task.delay(str(scan_id), organization_id, actor_id)
+
+
+def _enqueue_device_inventory(device_id: uuid.UUID, organization_id: str, actor_id: str) -> None:
+    from app.workers.tasks.discovery_tasks import run_device_inventory_task
+    run_device_inventory_task.delay(str(device_id), organization_id, None, actor_id)
 
 # New router for explicit /network routes
 network_router = APIRouter(prefix="/api/v1/network", tags=["network"])
@@ -44,26 +57,28 @@ discovery_router = APIRouter(prefix="/api/v1/discovery", tags=["discovery"])
 
 # --- New Network Routes ---
 
+async def _require_full_scan_permission_if_needed(payload: ScanStartRequest, current_user: AccessTokenClaims) -> None:
+    if payload.scan_mode == ScanMode.FULL and "discovery.inventory.collect" not in current_user.permissions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "Missing permission: discovery.inventory.collect (required for Full scans)"},
+        )
+
+
 @network_router.post("/scan", response_model=NetworkScanResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_network_scan(
     payload: ScanStartRequest,
-    background_tasks: BackgroundTasks,
     current_user: AccessTokenClaims = Depends(require_permission("discovery.scan")),
     db: AsyncSession = Depends(get_org_db),
 ):
+    await _require_full_scan_permission_if_needed(payload, current_user)
     scan = await service.start_scan(
         db,
         uuid.UUID(current_user.organization_id),
         payload,
         uuid.UUID(current_user.user_id)
     )
-    background_tasks.add_task(
-        service.run_discovery_scan_task,
-        SessionLocal,
-        uuid.UUID(current_user.organization_id),
-        scan.id,
-        uuid.UUID(current_user.user_id)
-    )
+    _enqueue_scan(scan.id, current_user.organization_id, current_user.user_id)
     return scan
 
 
@@ -86,6 +101,7 @@ async def list_network_devices(
     vendor: str | None = None,
     response_time: str | None = None,
     last_seen: str | None = None,
+    scan_status: str | None = None,
     sort_by: str = "last_seen_at",
     sort_order: str = "desc",
     current_user: AccessTokenClaims = Depends(require_permission("discovery.read")),
@@ -103,6 +119,7 @@ async def list_network_devices(
         vendor=vendor,
         response_time_bucket=response_time,
         last_seen_bucket=last_seen,
+        scan_status=scan_status,
         sort_by=sort_by,
         sort_order=sort_order,
     )
@@ -146,23 +163,17 @@ async def get_network_device_ip_history(
 @discovery_router.post("/scan", response_model=DeviceScanResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_discovery_scan(
     payload: ScanStartRequest,
-    background_tasks: BackgroundTasks,
     current_user: AccessTokenClaims = Depends(require_permission("discovery.scan")),
     db: AsyncSession = Depends(get_org_db),
 ):
+    await _require_full_scan_permission_if_needed(payload, current_user)
     scan = await service.start_scan(
         db,
         uuid.UUID(current_user.organization_id),
         payload,
         uuid.UUID(current_user.user_id)
     )
-    background_tasks.add_task(
-        service.run_discovery_scan_task,
-        SessionLocal,
-        uuid.UUID(current_user.organization_id),
-        scan.id,
-        uuid.UUID(current_user.user_id)
-    )
+    _enqueue_scan(scan.id, current_user.organization_id, current_user.user_id)
     # Map NetworkScan to DeviceScanResponse format
     return {
         "id": scan.id,
@@ -233,6 +244,7 @@ async def list_discovery_devices(
     vendor: str | None = None,
     response_time: str | None = None,
     last_seen: str | None = None,
+    scan_status: str | None = None,
     sort_by: str = "last_seen_at",
     sort_order: str = "desc",
     current_user: AccessTokenClaims = Depends(require_permission("discovery.read")),
@@ -250,6 +262,7 @@ async def list_discovery_devices(
         vendor=vendor,
         response_time_bucket=response_time,
         last_seen_bucket=last_seen,
+        scan_status=scan_status,
         sort_by=sort_by,
         sort_order=sort_order,
     )
@@ -284,47 +297,33 @@ async def get_discovery_device_history(
 @network_router.post("/discover", response_model=NetworkScanResponse, status_code=status.HTTP_202_ACCEPTED)
 async def discover_network(
     payload: ScanStartRequest,
-    background_tasks: BackgroundTasks,
     current_user: AccessTokenClaims = Depends(require_permission("discovery.scan")),
     db: AsyncSession = Depends(get_org_db),
 ):
+    await _require_full_scan_permission_if_needed(payload, current_user)
     scan = await service.start_scan(
         db,
         uuid.UUID(current_user.organization_id),
         payload,
         uuid.UUID(current_user.user_id)
     )
-    background_tasks.add_task(
-        service.run_discovery_scan_task,
-        SessionLocal,
-        uuid.UUID(current_user.organization_id),
-        scan.id,
-        uuid.UUID(current_user.user_id)
-    )
+    _enqueue_scan(scan.id, current_user.organization_id, current_user.user_id)
     return scan
 
 
 @inventory_router.post("/collect/{deviceId}", status_code=status.HTTP_202_ACCEPTED)
 async def collect_device_inventory(
     deviceId: uuid.UUID,
-    background_tasks: BackgroundTasks,
-    current_user: AccessTokenClaims = Depends(require_permission("discovery.scan")),
+    current_user: AccessTokenClaims = Depends(require_permission("discovery.inventory.collect")),
     db: AsyncSession = Depends(get_org_db),
 ):
-    background_tasks.add_task(
-        service.run_device_inventory_task,
-        SessionLocal,
-        uuid.UUID(current_user.organization_id),
-        deviceId,
-        uuid.UUID(current_user.user_id)
-    )
+    _enqueue_device_inventory(deviceId, current_user.organization_id, current_user.user_id)
     return {"status": "enqueued", "device_id": deviceId}
 
 
 @inventory_router.post("/collect-all", status_code=status.HTTP_202_ACCEPTED)
 async def collect_all_devices_inventory(
-    background_tasks: BackgroundTasks,
-    current_user: AccessTokenClaims = Depends(require_permission("discovery.scan")),
+    current_user: AccessTokenClaims = Depends(require_permission("discovery.inventory.collect")),
     db: AsyncSession = Depends(get_org_db),
 ):
     devs_q = await db.execute(select(Device).where(and_(
@@ -333,15 +332,9 @@ async def collect_all_devices_inventory(
         Device.deleted_at.is_(None)
     )))
     devices = list(devs_q.scalars().all())
-    
+
     for device in devices:
-        background_tasks.add_task(
-            service.run_device_inventory_task,
-            SessionLocal,
-            uuid.UUID(current_user.organization_id),
-            device.id,
-            uuid.UUID(current_user.user_id)
-        )
+        _enqueue_device_inventory(device.id, current_user.organization_id, current_user.user_id)
     return {"status": "enqueued", "total_devices": len(devices)}
 
 
@@ -356,6 +349,7 @@ async def list_devices(
     vendor: str | None = None,
     response_time: str | None = None,
     last_seen: str | None = None,
+    scan_status: str | None = None,
     sort_by: str = "last_seen_at",
     sort_order: str = "desc",
     current_user: AccessTokenClaims = Depends(require_permission("discovery.read")),
@@ -373,6 +367,7 @@ async def list_devices(
         vendor=vendor,
         response_time_bucket=response_time,
         last_seen_bucket=last_seen,
+        scan_status=scan_status,
         sort_by=sort_by,
         sort_order=sort_order,
     )
@@ -418,3 +413,30 @@ async def get_device_histories(
     db: AsyncSession = Depends(get_org_db),
 ):
     return await service.get_device_all_history(db, uuid.UUID(current_user.organization_id), id)
+
+
+@devices_router.get("/{id}/processes", response_model=list[DeviceProcessResponse])
+async def get_device_processes(
+    id: uuid.UUID,
+    current_user: AccessTokenClaims = Depends(require_permission("discovery.inventory.read")),
+    db: AsyncSession = Depends(get_org_db),
+):
+    return await service.get_device_processes(db, uuid.UUID(current_user.organization_id), id)
+
+
+@devices_router.get("/{id}/security", response_model=DeviceSecurityResponse | None)
+async def get_device_security(
+    id: uuid.UUID,
+    current_user: AccessTokenClaims = Depends(require_permission("discovery.inventory.read")),
+    db: AsyncSession = Depends(get_org_db),
+):
+    return await service.get_device_security(db, uuid.UUID(current_user.organization_id), id)
+
+
+@devices_router.get("/{id}/ports", response_model=list[DevicePortResponse])
+async def get_device_ports(
+    id: uuid.UUID,
+    current_user: AccessTokenClaims = Depends(require_permission("discovery.read")),
+    db: AsyncSession = Depends(get_org_db),
+):
+    return await service.get_device_ports(db, uuid.UUID(current_user.organization_id), id)

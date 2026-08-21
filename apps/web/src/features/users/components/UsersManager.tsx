@@ -642,6 +642,7 @@ export function UsersManager() {
         description="Enter employee details, credentials, and role authorizations."
         size="lg"
         isLoading={isMutating}
+        modal={false}
         footer={
           <>
             <Button

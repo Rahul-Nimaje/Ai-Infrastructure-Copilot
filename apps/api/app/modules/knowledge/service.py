@@ -19,16 +19,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.modules.knowledge import repository as repo
 from app.rag.chunking.chunker import chunk_document, chunk_pages
-from app.rag.embeddings.provider import get_embedding_provider
-from app.rag.generation.context_builder import build_context, build_source_citations
 from app.rag.ingestion.cleaner import clean_text
 from app.rag.ingestion.parser import compute_file_hash, get_file_type, parse_file, validate_file
-from app.rag.reranking.reranker import get_reranker
-from app.rag.retrieval.vector_store import PgVectorStore
+from py_shared.rag.context_builder import build_context, build_source_citations
+from py_shared.rag.embeddings import get_embedding_provider as _get_embedding_provider
+from py_shared.rag.reranker import get_reranker
+from py_shared.rag.vector_store import PgVectorStore
 
 logger = logging.getLogger(__name__)
 
 _vector_store = PgVectorStore()
+
+
+def get_embedding_provider():
+    return _get_embedding_provider(
+        settings.embedding_provider,
+        api_key=settings.openai_api_key,
+        model=settings.openai_embedding_model,
+        dimension=settings.embedding_dimension,
+    )
 
 
 # ── File Storage ────────────────────────────────────────────────────────

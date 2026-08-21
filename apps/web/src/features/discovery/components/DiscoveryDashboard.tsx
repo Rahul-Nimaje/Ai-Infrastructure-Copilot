@@ -4,8 +4,6 @@ import { useState } from "react";
 import type { Device } from "@ai-infra-copilot/shared-types";
 import {
   Network,
-  Play,
-  Square,
   RefreshCw,
   Clock,
   Radio,
@@ -14,16 +12,16 @@ import {
   Database,
   ChevronRight,
   Shield,
-  Lock,
   Server,
   Printer,
-  Monitor
+  Monitor,
+  KeyRound,
+  XCircle,
+  CheckCircle2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/providers/toast-provider";
 
 import {
@@ -35,7 +33,8 @@ import {
   Drawer,
   InfoGrid,
   Timeline,
-  StatusBadge
+  StatusBadge,
+  ProgressBar,
 } from "@/components/common";
 
 import {
@@ -44,15 +43,14 @@ import {
   VENDOR_OPTIONS,
   LATENCY_OPTIONS,
   LAST_SEEN_OPTIONS,
-  SCAN_TYPE_OPTIONS,
+  SCAN_STATUS_FILTER_OPTIONS,
   PORT_LABELS,
   DANGEROUS_PORTS,
-  DEFAULT_TARGET_RANGE,
-  DEFAULT_SCAN_TYPE
 } from "@/utils/constants";
 
 import { getDeviceIconColor } from "@/utils/mappers";
 import { formatBytes, bytesToGB, mhzToGhz, formatDateTime } from "@/utils/formatters";
+import type { StartScanFormValues } from "@/schemas/discovery-scan.schema";
 
 import {
   useGetDiscoveryDevicesQuery,
@@ -60,11 +58,15 @@ import {
   useGetDeviceHardwareQuery,
   useGetDeviceSoftwareQuery,
   useGetDeviceHistoryQuery,
+  useGetDeviceProcessesQuery,
+  useGetDeviceSecurityQuery,
   useStartScanMutation,
   useStopScanMutation,
   useCollectInventoryMutation,
   useCollectAllInventoryMutation,
 } from "@/features/discovery/services/discovery-api";
+import { ScanControlPanel } from "@/features/discovery/components/ScanControlPanel";
+import { computeDeviceStats } from "@/features/discovery/utils/scan-stats";
 
 export function DiscoveryDashboard() {
   const { toast } = useToast();
@@ -74,16 +76,13 @@ export function DiscoveryDashboard() {
   const [deviceType, setDeviceType] = useState("");
   const [vendor, setVendor] = useState("");
   const [status, setStatus] = useState("");
+  const [scanStatus, setScanStatus] = useState("");
   const [responseTime, setResponseTime] = useState("");
   const [lastSeen, setLastSeen] = useState("");
-  const [sortBy, setSortBy] = useState("last_seen_at");
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [sortBy] = useState("last_seen_at");
+  const [sortOrder] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);
   const [pageSize] = useState(15);
-
-  // Scan Config State
-  const [targetRange, setTargetRange] = useState(DEFAULT_TARGET_RANGE);
-  const [scanType, setScanType] = useState(DEFAULT_SCAN_TYPE);
 
   // Selected device for side drawer detail view
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
@@ -98,6 +97,7 @@ export function DiscoveryDashboard() {
     device_type: deviceType,
     vendor,
     status,
+    scan_status: scanStatus,
     response_time: responseTime,
     last_seen: lastSeen,
   }, { pollingInterval: 5000 });
@@ -108,7 +108,9 @@ export function DiscoveryDashboard() {
   });
 
   // Check if there is an active running scan right now
-  const activeScan = scansList.find((s) => s.status === "running" || s.status === "pending");
+  const activeScan = scansList.find((s) =>
+    ["pending", "discovering", "identifying", "scanning", "running"].includes(s.status)
+  );
 
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -130,17 +132,28 @@ export function DiscoveryDashboard() {
     { skip: !selectedDevice }
   );
 
+  // 6. Query Processes (Full-scan only data)
+  const { data: processes = [], isLoading: isProcessesLoading } = useGetDeviceProcessesQuery(
+    selectedDevice?.id ?? "",
+    { skip: !selectedDevice }
+  );
+
+  // 7. Query Security Posture (Full-scan only data)
+  const { data: security = null, isLoading: isSecurityLoading } = useGetDeviceSecurityQuery(
+    selectedDevice?.id ?? "",
+    { skip: !selectedDevice }
+  );
+
   // Mutations
   const [startScan, { isLoading: isStartScanLoading }] = useStartScanMutation();
   const [stopScan, { isLoading: isStopScanLoading }] = useStopScanMutation();
   const [collectInventory, { isLoading: isCollectPending }] = useCollectInventoryMutation();
   const [collectAllInventory, { isLoading: isCollectAllPending }] = useCollectAllInventoryMutation();
 
-  const handleStartScan = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleStartScan = async (values: StartScanFormValues) => {
     if (activeScan) return;
     try {
-      await startScan({ target_range: targetRange, scan_type: scanType }).unwrap();
+      await startScan(values).unwrap();
       toast({
         title: "Scan Started",
         description: "Network discovery scan sweep has been initiated successfully.",
@@ -224,15 +237,8 @@ export function DiscoveryDashboard() {
     return <Monitor className={`h-4 w-4 ${colorClass}`} />;
   };
 
-  // Stats derivation
-  const totalDiscovered = devicesData?.total || 0;
-  const onlineDevicesCount = devicesData?.items?.filter((d) => d.status.toLowerCase() === "online").length || 0;
-  
-  // Calculate average response time
-  const onlineWithPing = devicesData?.items?.filter((d) => d.response_time !== null && d.response_time > 0) || [];
-  const avgPing = onlineWithPing.length > 0
-    ? (onlineWithPing.reduce((acc, curr) => acc + Number(curr.response_time || 0), 0) / onlineWithPing.length).toFixed(1)
-    : "—";
+  // Stats derivation (section 13 — Total/Online/Offline/Scanning/Completed/Failed/Credentials Required)
+  const stats = computeDeviceStats(devicesData?.items || [], devicesData?.total || 0);
 
   // Columns definition for DataTable
   const tableColumns = [
@@ -271,6 +277,11 @@ export function DiscoveryDashboard() {
       render: (device: Device) => <StatusBadge status={device.status} />,
     },
     {
+      key: "scan_status",
+      header: "Scan Status",
+      render: (device: Device) => device.scan_status ? <StatusBadge status={device.scan_status} /> : <span className="text-muted-foreground">—</span>,
+    },
+    {
       key: "response_time",
       header: "Latency",
       render: (device: Device) => (
@@ -293,7 +304,7 @@ export function DiscoveryDashboard() {
       {/* Reusable PageHeader */}
       <PageHeader
         title="Network Device Discovery"
-        description="Scan subnet ranges to automatically discover infrastructure assets, hardware models, and open ports."
+        description="Scan subnet ranges to progressively discover, identify, and inventory infrastructure assets."
       >
         <Button
           onClick={() => handleCollectAllInventory()}
@@ -306,122 +317,26 @@ export function DiscoveryDashboard() {
       </PageHeader>
 
       {/* Discovery Dashboard Stats using StatCard */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-        <StatCard
-          label="Total Discovered"
-          value={totalDiscovered}
-          description="Assets registered in database"
-          icon={Database}
-        />
-        <StatCard
-          label="Live Online"
-          value={onlineDevicesCount}
-          description="Active hosts reachable on last poll"
-          icon={Radio}
-          iconColor="text-emerald-600"
-          iconBgColor="bg-emerald-500/10"
-          gradient="from-card to-emerald-500/5"
-          pulse
-        />
-        <StatCard
-          label="Avg Latency"
-          value={`${avgPing} ms`}
-          description="Average ping response speed"
-          icon={Clock}
-          iconColor="text-amber-600"
-          iconBgColor="bg-amber-500/10"
-          gradient="from-card to-amber-500/5"
-        />
-        <Card className={`border-border/60 transition-colors ${activeScan ? "bg-primary/5 border-primary/30" : "bg-card"}`}>
-          <CardContent className="p-6 flex items-center justify-between">
-            <div className="space-y-1 flex-1">
-              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Scan Status</span>
-              <div className="flex items-center gap-2">
-                <span className="text-lg font-extrabold uppercase tracking-wide">
-                  {activeScan ? activeScan.status : "Idle"}
-                </span>
-                {activeScan && (
-                  <span className="flex h-2 w-2 relative">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
-                  </span>
-                )}
-              </div>
-              <p className="text-[10px] text-muted-foreground">
-                {activeScan ? `Scanning range: ${activeScan.target_range}` : "No sweep currently running"}
-              </p>
-            </div>
-            <div className={`rounded-xl p-3 ${activeScan ? "bg-primary/20 text-primary animate-spin duration-3000" : "bg-muted text-muted-foreground"}`}>
-              <RefreshCw className="h-6 w-6" />
-            </div>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4 lg:grid-cols-7">
+        <StatCard label="Total" value={stats.total} icon={Database} />
+        <StatCard label="Online" value={stats.online} icon={Radio} iconColor="text-emerald-600" iconBgColor="bg-emerald-500/10" pulse />
+        <StatCard label="Offline" value={stats.offline} icon={XCircle} iconColor="text-muted-foreground" iconBgColor="bg-muted" />
+        <StatCard label="Scanning" value={stats.scanning} icon={RefreshCw} iconColor="text-blue-600" iconBgColor="bg-blue-500/10" />
+        <StatCard label="Completed" value={stats.completed} icon={CheckCircle2} iconColor="text-emerald-600" iconBgColor="bg-emerald-500/10" />
+        <StatCard label="Failed" value={stats.failed} icon={ShieldAlert} iconColor="text-destructive" iconBgColor="bg-destructive/10" />
+        <StatCard label="Creds Required" value={stats.credentialsRequired} icon={KeyRound} iconColor="text-amber-600" iconBgColor="bg-amber-500/10" />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Left column: Scan Controls & History */}
         <div className="lg:col-span-1 space-y-6">
-          {/* Start Scan Control */}
-          <Card className="border-border/60 shadow-md">
-            <CardHeader>
-              <CardTitle>Discovery Control Center</CardTitle>
-              <CardDescription>Initiate a new subnet sweep to populate inventory.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleStartScan} className="space-y-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="targetRange">Subnet Target (CIDR range) *</Label>
-                  <Input
-                    id="targetRange"
-                    required
-                    placeholder="10.20.4.0/24"
-                    value={targetRange}
-                    onChange={(e) => setTargetRange(e.target.value)}
-                    disabled={!!activeScan}
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label htmlFor="scanType">Discovery Profile</Label>
-                  <select
-                    id="scanType"
-                    value={scanType}
-                    onChange={(e) => setScanType(e.target.value)}
-                    disabled={!!activeScan}
-                    className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    {SCAN_TYPE_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {activeScan ? (
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    onClick={handleStopScan}
-                    disabled={isStopScanLoading}
-                    className="w-full gap-2 font-bold shadow"
-                  >
-                    <Square className="h-4 w-4 fill-white" />
-                    Terminate Current Scan
-                  </Button>
-                ) : (
-                  <Button
-                    type="submit"
-                    disabled={isStartScanLoading}
-                    className="w-full gap-2 font-bold bg-gradient-to-r from-primary to-indigo-600 shadow-md text-white"
-                  >
-                    <Play className="h-4 w-4 fill-white" />
-                    Launch Scan Sweep
-                  </Button>
-                )}
-              </form>
-            </CardContent>
-          </Card>
+          <ScanControlPanel
+            activeScan={activeScan}
+            onStartScan={handleStartScan}
+            onStopScan={handleStopScan}
+            isStartLoading={isStartScanLoading}
+            isStopLoading={isStopScanLoading}
+          />
 
           {/* Scans History */}
           <Card className="border-border/60 shadow-sm max-h-[350px] overflow-y-auto">
@@ -445,7 +360,7 @@ export function DiscoveryDashboard() {
                     </div>
                     <div className="flex items-center justify-between text-muted-foreground">
                       <span>Found: <span className="font-bold text-foreground">{scan.devices_found} devices</span></span>
-                      <span>Type: <span className="capitalize">{scan.scan_type.replace("_", " ")}</span></span>
+                      <span>Mode: <span className="capitalize">{scan.scan_type.replace("_", " ")}</span></span>
                     </div>
                     {scan.error_message && (
                       <p className="text-[10px] text-destructive italic bg-destructive/5 p-1 rounded border border-destructive/10">
@@ -480,7 +395,7 @@ export function DiscoveryDashboard() {
             </div>
 
             {/* Filter select inputs */}
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-4 text-xs">
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-5 text-xs">
               <FilterSelect
                 label="Type"
                 value={deviceType}
@@ -498,6 +413,15 @@ export function DiscoveryDashboard() {
                   setPage(1);
                 }}
                 options={VENDOR_OPTIONS}
+              />
+              <FilterSelect
+                label="Scan Status"
+                value={scanStatus}
+                onChange={(val) => {
+                  setScanStatus(val);
+                  setPage(1);
+                }}
+                options={SCAN_STATUS_FILTER_OPTIONS}
               />
               <FilterSelect
                 label="Latency"
@@ -557,25 +481,39 @@ export function DiscoveryDashboard() {
             {/* Overview Tab */}
             {activeTab === "overview" && (
               <div className="space-y-6">
-                {(selectedDevice as any).auth_success !== undefined && (selectedDevice as any).auth_success !== null && (
+                {selectedDevice.scan_status === "credentials_required" && (
+                  <div className="p-4 rounded-lg border border-amber-500/20 bg-amber-500/5 text-amber-700 dark:text-amber-400 flex items-start gap-3">
+                    <KeyRound className="h-5 w-5 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider">Credentials Required</h4>
+                      <p className="text-xs mt-1 opacity-90">
+                        No matching credential was found for this device&apos;s protocol. Add a WinRM/SSH/SNMP
+                        credential to the organization&apos;s credential store, then re-run Full Scan or Collect
+                        Telemetry.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {selectedDevice.auth_success !== undefined && selectedDevice.auth_error !== null && (
                   <div className={`p-4 rounded-lg border flex items-start gap-3 ${
-                    (selectedDevice as any).auth_success 
+                    selectedDevice.auth_success
                        ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400"
                       : "border-destructive/20 bg-destructive/5 text-destructive"
                   }`}>
-                    {(selectedDevice as any).auth_success ? (
+                    {selectedDevice.auth_success ? (
                       <Shield className="h-5 w-5 shrink-0 mt-0.5 text-emerald-500" />
                     ) : (
                       <ShieldAlert className="h-5 w-5 shrink-0 mt-0.5 text-destructive" />
                     )}
                     <div>
                       <h4 className="text-xs font-bold uppercase tracking-wider">
-                        {(selectedDevice as any).auth_success ? "Credentials Authenticated" : "Authentication Failure"}
+                        {selectedDevice.auth_success ? "Credentials Authenticated" : "Authentication Failure"}
                       </h4>
                       <p className="text-xs mt-1 opacity-90">
-                        {(selectedDevice as any).auth_success 
+                        {selectedDevice.auth_success
                           ? "Secure protocol connection established successfully during last sweep."
-                          : (selectedDevice as any).auth_error || "SSH/WinRM/SNMP credentials failed or were not found."
+                          : selectedDevice.auth_error || "SSH/WinRM/SNMP credentials failed or were not found."
                         }
                       </p>
                     </div>
@@ -601,8 +539,10 @@ export function DiscoveryDashboard() {
                 <InfoGrid
                   items={[
                     { label: "Status", value: <StatusBadge status={selectedDevice.status} /> },
+                    { label: "Scan Status", value: selectedDevice.scan_status ? <StatusBadge status={selectedDevice.scan_status} /> : "—" },
                     { label: "Response Time", value: selectedDevice.response_time !== null ? `${selectedDevice.response_time} ms` : "—", mono: true },
                     { label: "Device Type", value: selectedDevice.device_type.replace("_", " ") },
+                    { label: "Identification Confidence", value: selectedDevice.identification_confidence || "—" },
                     { label: "Operating System", value: selectedDevice.operating_system },
                     { label: "Manufacturer", value: selectedDevice.vendor },
                     { label: "Model Specs", value: selectedDevice.model },
@@ -620,7 +560,7 @@ export function DiscoveryDashboard() {
                   <p className="text-xs text-muted-foreground animate-pulse">Loading hardware specs...</p>
                 ) : !hardwareDetails?.inventory ? (
                   <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
-                    No hardware inventory records exist. Collect telemetry on the Overview tab first.
+                    No hardware inventory records exist. Run a Full Scan or collect telemetry on the Overview tab first.
                   </div>
                 ) : (
                   <InfoGrid
@@ -639,34 +579,6 @@ export function DiscoveryDashboard() {
               </div>
             )}
 
-            {/* Operating System Tab */}
-            {activeTab === "os" && (
-              <div className="space-y-4">
-                {isHardwareLoading ? (
-                  <p className="text-xs text-muted-foreground animate-pulse">Loading OS details...</p>
-                ) : !hardwareDetails?.inventory ? (
-                  <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
-                    No operating system records exist. Collect telemetry on the Overview tab first.
-                  </div>
-                ) : (
-                  <InfoGrid
-                    items={[
-                      { label: "OS Name & Edition", value: `${hardwareDetails.inventory.os_name} (${hardwareDetails.inventory.os_edition || "Standard"})`, colSpan: 2 },
-                      { label: "OS Version", value: hardwareDetails.inventory.os_version, mono: true },
-                      { label: "OS Build", value: hardwareDetails.inventory.os_build, mono: true },
-                      { label: "Time Zone", value: hardwareDetails.inventory.os_timezone },
-                      { label: "Uptime", value: hardwareDetails.inventory.uptime, mono: true },
-                      { label: "Antivirus", value: hardwareDetails.inventory.antivirus || "Not Detected" },
-                      { label: "Encryption / BitLocker", value: hardwareDetails.inventory.bitlocker_status || "Not Detected" },
-                      { label: "Local Firewall", value: hardwareDetails.inventory.firewall_status || "Not Detected" },
-                      { label: "Installation Date", value: formatDateTime(hardwareDetails.inventory.os_install_date) },
-                      { label: "Last Boot Timestamp", value: formatDateTime(hardwareDetails.inventory.os_last_boot), colSpan: 2 },
-                    ]}
-                  />
-                )}
-              </div>
-            )}
-
             {/* CPU Tab */}
             {activeTab === "cpu" && (
               <div className="space-y-4">
@@ -674,18 +586,18 @@ export function DiscoveryDashboard() {
                   <p className="text-xs text-muted-foreground animate-pulse">Loading processor profile...</p>
                 ) : !hardwareDetails?.processors?.length ? (
                   <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
-                    No processor records exist. Collect telemetry on the Overview tab first.
+                    No processor records exist. Run a Full Scan or collect telemetry on the Overview tab first.
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {hardwareDetails.processors.map((proc: any) => (
+                    {hardwareDetails.processors.map((proc) => (
                       <div key={proc.id} className="rounded-lg border border-border p-4 bg-muted/5 space-y-3">
                         <div className="flex justify-between items-start">
                           <div>
                             <span className="text-[10px] font-bold text-muted-foreground uppercase">Processor Model</span>
                             <h4 className="text-sm font-bold text-foreground mt-0.5">{proc.processor_name}</h4>
                           </div>
-                          <StatusBadge status="active" />
+                          {proc.socket_designation && <span className="text-[10px] font-mono text-muted-foreground">{proc.socket_designation}</span>}
                         </div>
                         <InfoGrid
                           columns={3}
@@ -693,6 +605,7 @@ export function DiscoveryDashboard() {
                             { label: "Physical Cores", value: proc.cores },
                             { label: "Logical Threads", value: proc.logical_processors },
                             { label: "Current Speed", value: mhzToGhz(proc.current_speed_mhz) },
+                            { label: "Max Speed", value: mhzToGhz(proc.max_speed_mhz) },
                           ]}
                         />
                       </div>
@@ -709,20 +622,25 @@ export function DiscoveryDashboard() {
                   <p className="text-xs text-muted-foreground animate-pulse">Loading memory profile...</p>
                 ) : !hardwareDetails?.memory?.length ? (
                   <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
-                    No memory records exist. Collect telemetry on the Overview tab first.
+                    No memory records exist. Run a Full Scan or collect telemetry on the Overview tab first.
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {hardwareDetails.memory.map((mem: any) => (
-                      <div key={mem.id} className="space-y-4">
+                    {hardwareDetails.memory.map((mem, idx) => {
+                      const usedPct = mem.total_ram_bytes && mem.available_ram_bytes
+                        ? Math.round(((mem.total_ram_bytes - mem.available_ram_bytes) / mem.total_ram_bytes) * 100)
+                        : null;
+                      return (
+                      <div key={idx} className="space-y-4">
                         <InfoGrid
                           columns={3}
                           items={[
                             { label: "Total RAM", value: bytesToGB(mem.total_ram_bytes) },
                             { label: "Available RAM", value: bytesToGB(mem.available_ram_bytes, 1) },
-                            { label: "DIMM Slots", value: mem.memory_slots },
+                            { label: "Configured Speed", value: mem.configured_speed_mhz ? `${mem.configured_speed_mhz} MHz` : "—" },
                           ]}
                         />
+                        {usedPct !== null && <ProgressBar value={usedPct} label="Memory Used" size="sm" />}
 
                         {mem.ram_modules && mem.ram_modules.length > 0 && (
                           <div>
@@ -732,16 +650,18 @@ export function DiscoveryDashboard() {
                                 <thead>
                                   <tr className="bg-muted/40 border-b border-border font-bold">
                                     <th className="p-2">Slot</th>
+                                    <th className="p-2">Manufacturer</th>
                                     <th className="p-2">Capacity</th>
-                                    <th className="p-2">Frequency/Type</th>
+                                    <th className="p-2">Speed</th>
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-border/60">
-                                  {mem.ram_modules.map((mod: any, idx: number) => (
-                                    <tr key={idx} className="hover:bg-muted/10">
-                                      <td className="p-2 font-mono">{mod.slot}</td>
-                                      <td className="p-2">{mod.size}</td>
-                                      <td className="p-2">{mod.type || "DDR4"}</td>
+                                  {mem.ram_modules.map((mod, midx) => (
+                                    <tr key={midx} className="hover:bg-muted/10">
+                                      <td className="p-2 font-mono">{mod.slot || "—"}</td>
+                                      <td className="p-2">{mod.manufacturer || "—"}</td>
+                                      <td className="p-2">{mod.capacity ?? "—"}</td>
+                                      <td className="p-2">{mod.speed_mhz ?? "—"}</td>
                                     </tr>
                                   ))}
                                 </tbody>
@@ -750,7 +670,8 @@ export function DiscoveryDashboard() {
                           </div>
                         )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -763,44 +684,43 @@ export function DiscoveryDashboard() {
                   <p className="text-xs text-muted-foreground animate-pulse">Loading storage details...</p>
                 ) : !hardwareDetails?.storage?.length ? (
                   <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
-                    No storage records exist. Collect telemetry on the Overview tab first.
+                    No storage records exist. Run a Full Scan or collect telemetry on the Overview tab first.
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {hardwareDetails.storage.map((disk: any) => {
-                      const pctUsed = disk.capacity_bytes
-                        ? (((disk.capacity_bytes - disk.free_space_bytes) / disk.capacity_bytes) * 100).toFixed(0)
+                    {hardwareDetails.storage.map((disk, idx) => {
+                      const pctUsed = disk.capacity_bytes && disk.free_space_bytes !== null
+                        ? Math.round(((disk.capacity_bytes - (disk.free_space_bytes ?? 0)) / disk.capacity_bytes) * 100)
                         : 0;
 
                       return (
-                        <div key={disk.id} className="rounded-lg border border-border p-4 bg-muted/5 space-y-3">
+                        <div key={disk.id ?? idx} className="rounded-lg border border-border p-4 bg-muted/5 space-y-3">
                           <div className="flex justify-between items-start">
                             <div>
-                              <span className="text-[10px] font-bold text-muted-foreground uppercase">Disk Unit Model</span>
-                              <h4 className="text-sm font-bold text-foreground mt-0.5">{disk.disk_model || "Generic Disk"}</h4>
+                              <span className="text-[10px] font-bold text-muted-foreground uppercase">
+                                {disk.media_type ? `${disk.media_type} Disk` : "Disk Unit"}
+                              </span>
+                              <h4 className="text-sm font-bold text-foreground mt-0.5">{disk.disk_model || "Unknown Disk Model"}</h4>
                             </div>
                             <span className="text-[10px] font-mono text-muted-foreground">S/N: {disk.serial_number || "—"}</span>
                           </div>
 
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-xs text-muted-foreground">
-                              <span>Capacity: <span className="font-semibold text-foreground">{bytesToGB(disk.capacity_bytes)}</span></span>
-                              <span>Free Space: <span className="font-semibold text-foreground">{bytesToGB(disk.free_space_bytes)} ({100 - Number(pctUsed)}%)</span></span>
-                            </div>
-                            <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
-                              <div
-                                className={`h-1.5 rounded-full ${Number(pctUsed) > 90 ? "bg-destructive" : "bg-primary"}`}
-                                style={{ width: `${pctUsed}%` }}
-                              />
-                            </div>
-                          </div>
+                          <InfoGrid
+                            columns={3}
+                            items={[
+                              { label: "Interface", value: disk.interface_type || "—" },
+                              { label: "Health", value: disk.health_status || "—" },
+                              { label: "Capacity", value: bytesToGB(disk.capacity_bytes) },
+                            ]}
+                          />
+                          <ProgressBar value={pctUsed} label="Disk Used" sublabel={`Free: ${bytesToGB(disk.free_space_bytes)}`} size="sm" />
 
                           {disk.partitions && disk.partitions.length > 0 && (
                             <div className="pt-2 border-t border-border/40 text-[10px] space-y-1">
                               <span className="font-bold text-muted-foreground uppercase">Logical Volumes</span>
                               <div className="flex gap-2 flex-wrap">
-                                {disk.partitions.map((part: any, idx: number) => (
-                                  <StatusBadge key={idx} status={`${part.name} (${bytesToGB(part.size_bytes)})`} />
+                                {disk.partitions.map((part, pidx) => (
+                                  <StatusBadge key={pidx} status={`${part.name} (${bytesToGB(part.size_bytes)})`} />
                                 ))}
                               </div>
                             </div>
@@ -809,6 +729,59 @@ export function DiscoveryDashboard() {
                       );
                     })}
                   </div>
+                )}
+                {hardwareDetails?.partitions && hardwareDetails.partitions.length > 0 && (
+                  <div className="rounded-lg border border-border overflow-hidden text-xs">
+                    <span className="text-[10px] font-bold text-muted-foreground uppercase p-2 block">All Partitions</span>
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-muted/40 border-b border-border font-bold">
+                          <th className="p-2">Mount / Node</th>
+                          <th className="p-2">Filesystem</th>
+                          <th className="p-2">Used</th>
+                          <th className="p-2">Free</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {hardwareDetails.partitions.map((part) => (
+                          <tr key={part.id} className="hover:bg-muted/10">
+                            <td className="p-2 font-mono">{part.mount_point || part.device_node || "—"}</td>
+                            <td className="p-2">{part.filesystem_type || "—"}</td>
+                            <td className="p-2">{bytesToGB(part.used_bytes)}</td>
+                            <td className="p-2">{bytesToGB(part.free_space_bytes)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Operating System Tab */}
+            {activeTab === "os" && (
+              <div className="space-y-4">
+                {isHardwareLoading ? (
+                  <p className="text-xs text-muted-foreground animate-pulse">Loading OS details...</p>
+                ) : !hardwareDetails?.inventory ? (
+                  <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
+                    No operating system records exist. Run a Full Scan or collect telemetry on the Overview tab first.
+                  </div>
+                ) : (
+                  <InfoGrid
+                    items={[
+                      { label: "OS Name & Edition", value: `${hardwareDetails.inventory.os_name || "Unknown"} ${hardwareDetails.inventory.os_edition ? `(${hardwareDetails.inventory.os_edition})` : ""}`, colSpan: 2 },
+                      { label: "OS Version", value: hardwareDetails.inventory.os_version, mono: true },
+                      { label: "OS Build", value: hardwareDetails.inventory.os_build, mono: true },
+                      { label: "Time Zone", value: hardwareDetails.inventory.os_timezone },
+                      { label: "Uptime", value: hardwareDetails.inventory.uptime, mono: true },
+                      { label: "Antivirus", value: hardwareDetails.inventory.antivirus || "Not Detected" },
+                      { label: "Encryption / BitLocker", value: hardwareDetails.inventory.bitlocker_status || "Not Detected" },
+                      { label: "Local Firewall", value: hardwareDetails.inventory.firewall_status || "Not Detected" },
+                      { label: "Installation Date", value: formatDateTime(hardwareDetails.inventory.os_install_date) },
+                      { label: "Last Boot Timestamp", value: formatDateTime(hardwareDetails.inventory.os_last_boot), colSpan: 2 },
+                    ]}
+                  />
                 )}
               </div>
             )}
@@ -820,11 +793,11 @@ export function DiscoveryDashboard() {
                   <p className="text-xs text-muted-foreground animate-pulse">Loading interface metrics...</p>
                 ) : !hardwareDetails?.interfaces?.length ? (
                   <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
-                    No network interface profile exists. Collect telemetry on the Overview tab first.
+                    No network interface profile exists. Run a Full Scan or collect telemetry on the Overview tab first.
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {hardwareDetails.interfaces.map((net: any) => (
+                    {hardwareDetails.interfaces.map((net) => (
                       <div key={net.id} className="rounded-lg border border-border p-4 bg-muted/5 space-y-3">
                         <div className="flex justify-between items-center">
                           <h4 className="text-xs font-bold text-foreground font-mono uppercase tracking-wide flex items-center gap-1.5">
@@ -840,6 +813,7 @@ export function DiscoveryDashboard() {
                             { label: "Default Gateway", value: net.gateway, mono: true },
                             { label: "DNS Servers", value: net.dns_servers?.join(", "), mono: true },
                             { label: "DHCP Connection", value: net.dhcp_enabled ? "Enabled" : "Static IP" },
+                            { label: "Link Speed", value: net.speed_mbps ? `${net.speed_mbps} Mbps` : "—" },
                           ]}
                         />
                       </div>
@@ -856,7 +830,7 @@ export function DiscoveryDashboard() {
                   <p className="text-xs text-muted-foreground animate-pulse">Loading software register...</p>
                 ) : !softwareDetails?.installed_software?.length ? (
                   <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
-                    No software directory exists. Collect telemetry on the Overview tab first.
+                    No software directory exists. Run a Full Scan or collect telemetry on the Overview tab first.
                   </div>
                 ) : (
                   <div>
@@ -873,7 +847,7 @@ export function DiscoveryDashboard() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border/60">
-                          {softwareDetails.installed_software.map((sw: any) => (
+                          {softwareDetails.installed_software.map((sw) => (
                             <tr key={sw.id} className="hover:bg-muted/10">
                               <td className="p-2 font-semibold text-foreground">{sw.name}</td>
                               <td className="p-2 font-mono text-muted-foreground text-[10px]">{sw.version || "—"}</td>
@@ -895,7 +869,7 @@ export function DiscoveryDashboard() {
                   <p className="text-xs text-muted-foreground animate-pulse">Loading service registry...</p>
                 ) : !softwareDetails?.services?.length ? (
                   <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
-                    No services directory exists. Collect telemetry on the Overview tab first.
+                    No services directory exists. Run a Full Scan or collect telemetry on the Overview tab first.
                   </div>
                 ) : (
                   <div>
@@ -912,16 +886,59 @@ export function DiscoveryDashboard() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border/60">
-                          {softwareDetails.services.map((srv: any) => (
+                          {softwareDetails.services.map((srv) => (
                             <tr key={srv.id} className="hover:bg-muted/10">
                               <td className="p-2">
                                 <div className="font-semibold text-foreground">{srv.display_name || srv.name}</div>
                                 <div className="text-[10px] text-muted-foreground font-mono">{srv.name}</div>
                               </td>
                               <td className="p-2">
-                                <StatusBadge status={srv.status} />
+                                <StatusBadge status={srv.status || "unknown"} />
                               </td>
                               <td className="p-2 text-muted-foreground capitalize text-[10px]">{srv.start_type || "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Processes Tab */}
+            {activeTab === "processes" && (
+              <div className="space-y-4">
+                {isProcessesLoading ? (
+                  <p className="text-xs text-muted-foreground animate-pulse">Loading process snapshot...</p>
+                ) : !processes.length ? (
+                  <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
+                    No process snapshot exists. Run a Full Scan to capture running processes.
+                  </div>
+                ) : (
+                  <div>
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider block mb-3 text-[10px]">
+                      Running Processes ({processes.length}) — snapshot at {formatDateTime(processes[0]?.collected_at)}
+                    </span>
+                    <div className="rounded-lg border border-border overflow-hidden text-xs max-h-[400px] overflow-y-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-muted/40 border-b border-border font-bold">
+                            <th className="p-2">PID</th>
+                            <th className="p-2">Name</th>
+                            <th className="p-2">User</th>
+                            <th className="p-2">CPU %</th>
+                            <th className="p-2">Memory</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/60">
+                          {processes.map((proc) => (
+                            <tr key={proc.id} className="hover:bg-muted/10">
+                              <td className="p-2 font-mono">{proc.pid}</td>
+                              <td className="p-2 font-semibold text-foreground">{proc.name}</td>
+                              <td className="p-2 text-muted-foreground">{proc.user_name || "—"}</td>
+                              <td className="p-2 font-mono">{proc.cpu_percent ?? "—"}</td>
+                              <td className="p-2 font-mono">{formatBytes(proc.memory_bytes)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -962,11 +979,41 @@ export function DiscoveryDashboard() {
               </div>
             )}
 
-            {/* History Tab */}
-            {activeTab === "history" && (
+            {/* Security Tab */}
+            {activeTab === "security" && (
+              <div className="space-y-4">
+                {isSecurityLoading ? (
+                  <p className="text-xs text-muted-foreground animate-pulse">Loading security posture...</p>
+                ) : !security ? (
+                  <div className="p-8 rounded-lg border border-border bg-muted/20 text-center text-xs text-muted-foreground">
+                    No security posture recorded. Run a Full Scan to collect Defender/firewall/SELinux status.
+                  </div>
+                ) : (
+                  <InfoGrid
+                    items={[
+                      { label: "Antivirus Product", value: security.antivirus_product || "Not Detected" },
+                      { label: "Antivirus Up To Date", value: security.antivirus_up_to_date === null ? "—" : security.antivirus_up_to_date ? "Yes" : "No" },
+                      { label: "Firewall Enabled", value: security.firewall_enabled === null ? "—" : security.firewall_enabled ? "Enabled" : "Disabled" },
+                      { label: "BitLocker Status", value: security.bitlocker_status || "Not Applicable" },
+                      { label: "Secure Boot", value: security.secure_boot_enabled === null ? "—" : security.secure_boot_enabled ? "Enabled" : "Disabled" },
+                      { label: "Pending Updates", value: security.pending_updates_count ?? "—" },
+                      { label: "SELinux", value: security.selinux_status || "—" },
+                      { label: "AppArmor", value: security.apparmor_status || "—" },
+                      { label: "UFW Active", value: security.ufw_active === null ? "—" : security.ufw_active ? "Yes" : "No" },
+                      { label: "SSH Root Login", value: security.ssh_root_login_enabled === null ? "—" : security.ssh_root_login_enabled ? "Enabled (risk)" : "Disabled" },
+                      { label: "SSH Password Auth", value: security.ssh_password_auth_enabled === null ? "—" : security.ssh_password_auth_enabled ? "Enabled" : "Disabled" },
+                      { label: "Last Update Installed", value: formatDateTime(security.last_update_installed_at) },
+                    ]}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Scan History Tab */}
+            {activeTab === "scan_history" && (
               <Timeline
                 loading={isHistoryLoading}
-                events={(allHistoryDetails?.scan_history || []).map((hist: any) => ({
+                events={(allHistoryDetails?.scan_history || []).map((hist) => ({
                   id: hist.id,
                   timestamp: hist.created_at,
                   badge: {
@@ -988,7 +1035,7 @@ export function DiscoveryDashboard() {
             {activeTab === "ip_history" && (
               <Timeline
                 loading={isHistoryLoading}
-                events={(allHistoryDetails?.ip_history || []).map((hist: any) => ({
+                events={(allHistoryDetails?.ip_history || []).map((hist) => ({
                   id: hist.id,
                   timestamp: hist.changed_at,
                   content: (
@@ -1005,7 +1052,7 @@ export function DiscoveryDashboard() {
             {activeTab === "inventory_history" && (
               <Timeline
                 loading={isHistoryLoading}
-                events={(allHistoryDetails?.inventory_history || []).map((hist: any) => ({
+                events={(allHistoryDetails?.inventory_history || []).map((hist) => ({
                   id: hist.id,
                   timestamp: hist.created_at,
                   badge: {

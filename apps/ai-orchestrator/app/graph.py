@@ -26,7 +26,8 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import coordinator_agent, planner_agent, powershell_agent, rag_agent
-from app.rag.generation.grounded_generator import build_grounded_prompt
+from app.llm.provider_interface import get_llm_provider
+from py_shared.rag_prompts import build_grounded_prompt
 
 
 async def run(
@@ -126,19 +127,8 @@ async def run(
 
     system_prompt, user_query = build_grounded_prompt(rag_context, user_prompt)
 
-    # Use LLM provider if available, or assemble answer directly
-    if rag_context:
-        answer = f"Based on your organization's knowledge base:\n\n{rag_context}\n\n"
-        if rag_sources:
-            answer += "\n\nSources cited:\n" + "\n".join(
-                f"- [{s['document_title']}]({s['file_name']})" + (f" (Page {s['page_number']})" if s.get('page_number') else "")
-                for s in rag_sources
-            )
-    else:
-        answer = (
-            "I couldn't find any relevant documentation in your organization's knowledge base "
-            "for this query. Please upload relevant SOPs or runbooks to the Knowledge Base module."
-        )
+    provider = get_llm_provider()
+    answer = await provider.complete(system_prompt=system_prompt, user_prompt=user_query)
 
     yield {"event": "token", "data": {"delta": answer}}
     yield {"event": "done", "data": {"final_message": answer, "sources": rag_sources}}

@@ -44,6 +44,8 @@ class CredentialType(str, Enum):
     SSH_KEY = "ssh_key"
     API_KEY = "api_key"
     CLOUD_IAM = "cloud_iam"
+    SNMP_V2C = "snmp_v2c"
+    SNMP_V3 = "snmp_v3"
 
 
 class VaultEngine(str, Enum):
@@ -158,3 +160,79 @@ class QueryIntent(str, Enum):
     RAG = "rag"
     INFRASTRUCTURE = "infrastructure"
     RAG_AND_INFRASTRUCTURE = "rag_and_infrastructure"
+
+
+class DeviceType(str, Enum):
+    """Classification produced by discovery's identify_device() step."""
+
+    WINDOWS = "windows"
+    LINUX = "linux"
+    MACOS = "macos"
+    ROUTER = "router"
+    SWITCH = "switch"
+    FIREWALL = "firewall"
+    PRINTER = "printer"
+    NAS = "nas"
+    VMWARE_ESXI = "vmware_esxi"
+    HYPER_V = "hyper-v"
+    KUBERNETES_NODE = "kubernetes_node"
+    DOCKER_HOST = "docker_host"
+    VIRTUAL_MACHINE = "virtual_machine"
+    ACCESS_POINT = "access_point"
+    IP_CAMERA = "ip_camera"
+    IOT = "iot"
+    PROXMOX = "proxmox"
+    UNKNOWN = "unknown"
+
+
+class DeviceIdentificationConfidence(str, Enum):
+    """How identify_device() arrived at Device.device_type — never claim
+    'confirmed' from a heuristic alone."""
+
+    CONFIRMED = "confirmed"
+    UNVERIFIED = "unverified"
+    UNKNOWN = "unknown"
+
+
+class DeviceStatus(str, Enum):
+    """Network reachability, distinct from ScanStatus/DeviceScanStatus which
+    track inventory-collection lifecycle."""
+
+    ONLINE = "online"
+    OFFLINE = "offline"
+    UNKNOWN = "unknown"
+
+
+class ScanStatus(str, Enum):
+    """NetworkScan.status lifecycle."""
+
+    PENDING = "pending"
+    DISCOVERING = "discovering"
+    IDENTIFYING = "identifying"
+    SCANNING = "scanning"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CREDENTIALS_REQUIRED = "credentials_required"
+    CANCELLED = "cancelled"
+
+
+class DeviceScanStatus(str, Enum):
+    """Device.scan_status — per-device inventory-collection lifecycle."""
+
+    DISCOVERED = "discovered"
+    IDENTIFYING = "identifying"
+    SCANNING = "scanning"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CREDENTIALS_REQUIRED = "credentials_required"
+    OFFLINE = "offline"
+
+
+class ScanMode(str, Enum):
+    """Depth of a discovery scan, selected by the user in the UI."""
+
+    QUICK = "quick"
+    STANDARD = "standard"
+    FULL = "full"

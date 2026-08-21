@@ -2,7 +2,7 @@
 and formats source citations for the LLM and the UI."""
 from __future__ import annotations
 
-from app.rag.retrieval.vector_store import ChunkResult
+from py_shared.rag.vector_store import ChunkResult
 
 
 def build_context(chunks: list[ChunkResult], *, max_context_tokens: int = 4000) -> str:

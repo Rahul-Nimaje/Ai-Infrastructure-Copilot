@@ -1,11 +1,16 @@
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
+
+from py_shared.enums import ScanMode
 
 
 class ScanStartRequest(BaseModel):
     target_range: str = Field(..., description="Target subnet range, e.g. 192.168.1.0/24")
-    scan_type: str = Field("all", description="ping | arp | snmp | wmi | ssh | all")
+    scan_mode: ScanMode = Field(
+        ScanMode.STANDARD,
+        description="quick (IP/hostname/MAC/vendor/status only) | standard (+ports/services/OS) | full (+ credentialed hardware/software/security inventory)",
+    )
     credential_ids: list[UUID] | None = Field(default=None, description="Optional credentials to try for authentication")
 
 
@@ -89,12 +94,21 @@ class DeviceResponse(BaseModel):
     raw_details: dict | None
     auth_success: bool
     auth_error: str | None
-    
+
+    scan_status: str | None
+    identification_confidence: str | None
+    identification_method: str | None
+
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def needs_credentials(self) -> bool:
+        return self.scan_status == "credentials_required"
 
 
 class DeviceScanHistoryResponse(BaseModel):
@@ -186,6 +200,23 @@ class DeviceNetworkInterfaceResponse(BaseModel):
     gateway: str | None
     dhcp_enabled: bool | None
     status: str | None
+    speed_mbps: int | None = None
+    duplex: str | None = None
+    interface_type: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class DevicePartitionResponse(BaseModel):
+    id: UUID
+    mount_point: str | None
+    device_node: str | None
+    filesystem_type: str | None
+    label: str | None = None
+    capacity_bytes: int | None
+    used_bytes: int | None = None
+    free_space_bytes: int | None
 
     class Config:
         from_attributes = True
@@ -198,6 +229,9 @@ class DeviceStorageResponse(BaseModel):
     capacity_bytes: int | None
     free_space_bytes: int | None
     partitions: list | None
+    interface_type: str | None = None
+    media_type: str | None = None
+    health_status: str | None = None
 
     class Config:
         from_attributes = True
@@ -209,6 +243,7 @@ class DeviceMemoryResponse(BaseModel):
     available_ram_bytes: int | None
     memory_slots: int | None
     ram_modules: list | None
+    configured_speed_mhz: int | None = None
 
     class Config:
         from_attributes = True
@@ -221,6 +256,8 @@ class DeviceProcessorResponse(BaseModel):
     cores: int | None
     logical_processors: int | None
     current_speed_mhz: int | None
+    max_speed_mhz: int | None = None
+    socket_designation: str | None = None
 
     class Config:
         from_attributes = True
@@ -232,6 +269,61 @@ class DeviceHardwareDetailsResponse(BaseModel):
     memory: list[DeviceMemoryResponse]
     storage: list[DeviceStorageResponse]
     interfaces: list[DeviceNetworkInterfaceResponse]
+    partitions: list[DevicePartitionResponse] = []
+
+
+class DeviceProcessResponse(BaseModel):
+    id: UUID
+    pid: int
+    name: str
+    command_line: str | None
+    user_name: str | None
+    cpu_percent: float | None
+    memory_bytes: int | None
+    status: str | None
+    collected_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DeviceSecurityResponse(BaseModel):
+    id: UUID
+    defender_enabled: bool | None
+    defender_signature_version: str | None
+    firewall_enabled: bool | None
+    firewall_profiles: dict | None
+    bitlocker_status: str | None
+    secure_boot_enabled: bool | None
+    antivirus_product: str | None
+    antivirus_up_to_date: bool | None
+    pending_updates_count: int | None
+    last_update_installed_at: datetime | None
+    selinux_status: str | None
+    apparmor_status: str | None
+    ufw_active: bool | None
+    iptables_rule_count: int | None
+    ssh_root_login_enabled: bool | None
+    ssh_password_auth_enabled: bool | None
+    collected_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DevicePortResponse(BaseModel):
+    id: UUID
+    port_number: int
+    protocol: str
+    service_name: str | None
+    product: str | None
+    version: str | None
+    state: str
+    first_seen_at: datetime
+    last_seen_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 class DeviceInstalledSoftwareResponse(BaseModel):

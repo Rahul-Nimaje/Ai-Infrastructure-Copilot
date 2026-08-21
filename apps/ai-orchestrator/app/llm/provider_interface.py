@@ -25,4 +25,21 @@ def get_llm_provider() -> LlmProvider:
         from app.llm.gemini_provider import GeminiProvider
 
         return GeminiProvider()
+    if settings.llm_provider == "fallback_chain":
+        from app.llm.fallback_provider import FallbackLlmProvider
+        from app.llm.gemini_provider import GeminiProvider
+        from app.llm.google_ai_studio_provider import GoogleAiStudioProvider
+        from app.llm.nvidia_provider import NvidiaProvider
+        from app.llm.openai_provider import OpenAiProvider
+        from app.llm.openrouter_provider import OpenRouterProvider
+
+        candidates: list[tuple[str, str, type]] = [
+            ("openrouter", settings.openrouter_api_key, OpenRouterProvider),
+            ("nvidia", settings.nvidia_api_key, NvidiaProvider),
+            ("google_ai_studio", settings.google_ai_studio_api_key, GoogleAiStudioProvider),
+            ("openai", settings.openai_api_key, OpenAiProvider),
+            ("gemini", settings.gemini_api_key, GeminiProvider),
+        ]
+        providers = [(name, cls()) for name, api_key, cls in candidates if api_key]
+        return FallbackLlmProvider(providers)
     raise NotImplementedError(f"LLM provider '{settings.llm_provider}' is not implemented in Phase 1.")

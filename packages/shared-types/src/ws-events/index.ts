@@ -29,8 +29,34 @@ export interface TokenEvent {
   delta: string;
 }
 
+// Network Discovery / Full Inventory Scan — live progress (section 11).
+// Payloads are deliberately minimal (ids, counts, name) — full device detail
+// is fetched via the REST API, these are just progress pings.
+
+export interface ScanProgressEvent {
+  scan_id: string;
+  phase: "discovering" | "identifying" | "scanning" | string;
+  devices_total: number;
+  devices_processed: number;
+}
+
+export interface ScanCompletedEvent {
+  scan_id: string;
+  status: string;
+}
+
+export interface DeviceProgressEvent {
+  scan_id: string | null;
+  device_id: string;
+  device_name?: string | null;
+  status: string;
+}
+
 export type ServerToClientEvents = {
   "task.progress": TaskProgressEvent;
   "approval.requested": ApprovalRequestedEvent;
   "approval.resolved": ApprovalResolvedEvent;
+  "discovery.scan.progress": ScanProgressEvent;
+  "discovery.scan.completed": ScanCompletedEvent;
+  "discovery.device.progress": DeviceProgressEvent;
 };

@@ -1,6 +1,9 @@
 """Grounded generation — enforces grounding rules so the LLM prioritizes
 retrieved organization-specific information and does not hallucinate procedures.
 
+Shared between apps/api and apps/ai-orchestrator (the sole caller today), since
+this is pure prompt-template logic with no service-specific dependencies.
+
 The grounding system prompt ensures:
 - Organization-specific info comes from retrieved context, not invented
 - General knowledge is clearly distinguished from retrieved knowledge

@@ -178,6 +178,21 @@ export interface AiMessage {
   created_at: string;
 }
 
+// Section 9/12 of the full-inventory-scan feature — device inventory
+// lifecycle and scan depth, distinct from Device.status (online/offline
+// reachability).
+export type DeviceScanStatus =
+  | "discovered"
+  | "identifying"
+  | "scanning"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "credentials_required"
+  | "offline";
+
+export type ScanMode = "quick" | "standard" | "full";
+
 export interface Device {
   id: string;
   organization_id: string;
@@ -195,6 +210,12 @@ export interface Device {
   response_time: number | null;
   open_ports: { ports: number[] } | null;
   network_interface: string | null;
+  auth_success: boolean;
+  auth_error: string | null;
+  scan_status: DeviceScanStatus | null;
+  identification_confidence: "confirmed" | "unverified" | "unknown" | null;
+  identification_method: string | null;
+  needs_credentials: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -202,8 +223,8 @@ export interface Device {
 export interface DeviceScan {
   id: string;
   organization_id: string;
-  status: "pending" | "running" | "completed" | "failed";
-  scan_type: string;
+  status: "pending" | "discovering" | "identifying" | "scanning" | "completed" | "partial" | "failed" | "credentials_required" | "cancelled";
+  scan_type: ScanMode | string;
   target_range: string | null;
   started_at: string | null;
   completed_at: string | null;
@@ -222,4 +243,166 @@ export interface DeviceHistory {
   before_state: Record<string, any> | null;
   after_state: Record<string, any> | null;
   created_at: string;
+}
+
+// ─── Full inventory scan detail entities (device detail drawer tabs) ──────
+
+export interface DeviceInventoryProfile {
+  computer_name: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  serial_number: string | null;
+  bios_version: string | null;
+  motherboard: string | null;
+  domain: string | null;
+  workgroup: string | null;
+  os_name: string | null;
+  os_edition: string | null;
+  os_build: string | null;
+  os_version: string | null;
+  os_install_date: string | null;
+  os_last_boot: string | null;
+  os_timezone: string | null;
+  antivirus: string | null;
+  bitlocker_status: string | null;
+  firewall_status: string | null;
+  uptime: string | null;
+}
+
+export interface DeviceProcessorInfo {
+  id: string;
+  processor_name: string | null;
+  architecture: string | null;
+  cores: number | null;
+  logical_processors: number | null;
+  current_speed_mhz: number | null;
+  max_speed_mhz: number | null;
+  socket_designation: string | null;
+}
+
+export interface DeviceMemoryInfo {
+  id: string;
+  total_ram_bytes: number | null;
+  available_ram_bytes: number | null;
+  memory_slots: number | null;
+  ram_modules: { slot: string | null; manufacturer: string | null; capacity: string | number | null; speed_mhz: string | number | null }[] | null;
+  configured_speed_mhz: number | null;
+}
+
+export interface DevicePartitionInfo {
+  id: string;
+  mount_point: string | null;
+  device_node: string | null;
+  filesystem_type: string | null;
+  label: string | null;
+  capacity_bytes: number | null;
+  used_bytes: number | null;
+  free_space_bytes: number | null;
+}
+
+export interface DeviceStorageInfo {
+  id: string;
+  disk_model: string | null;
+  serial_number: string | null;
+  capacity_bytes: number | null;
+  free_space_bytes: number | null;
+  partitions: { name: string; size_bytes: number }[] | null;
+  interface_type: string | null;
+  media_type: string | null;
+  health_status: string | null;
+}
+
+export interface DeviceNetworkInterfaceInfo {
+  id: string;
+  interface_name: string;
+  mac_address: string | null;
+  ip_addresses: string[] | null;
+  dns_servers: string[] | null;
+  gateway: string | null;
+  dhcp_enabled: boolean | null;
+  status: string | null;
+  speed_mbps: number | null;
+  duplex: string | null;
+  interface_type: string | null;
+}
+
+export interface DeviceHardwareProfile {
+  inventory: DeviceInventoryProfile | null;
+  processors: DeviceProcessorInfo[];
+  memory: DeviceMemoryInfo[];
+  storage: DeviceStorageInfo[];
+  interfaces: DeviceNetworkInterfaceInfo[];
+  partitions: DevicePartitionInfo[];
+}
+
+export interface DeviceInstalledSoftwareInfo {
+  id: string;
+  name: string;
+  version: string | null;
+  publisher: string | null;
+  install_date: string | null;
+}
+
+export interface DeviceServiceInfo {
+  id: string;
+  name: string;
+  display_name: string | null;
+  status: string | null;
+  start_type: string | null;
+}
+
+export interface DeviceSoftwareProfile {
+  installed_software: DeviceInstalledSoftwareInfo[];
+  services: DeviceServiceInfo[];
+}
+
+export interface DeviceProcess {
+  id: string;
+  pid: number;
+  name: string;
+  command_line: string | null;
+  user_name: string | null;
+  cpu_percent: number | null;
+  memory_bytes: number | null;
+  status: string | null;
+  collected_at: string;
+}
+
+export interface DeviceSecurityPosture {
+  id: string;
+  defender_enabled: boolean | null;
+  defender_signature_version: string | null;
+  firewall_enabled: boolean | null;
+  firewall_profiles: Record<string, boolean> | null;
+  bitlocker_status: string | null;
+  secure_boot_enabled: boolean | null;
+  antivirus_product: string | null;
+  antivirus_up_to_date: boolean | null;
+  pending_updates_count: number | null;
+  last_update_installed_at: string | null;
+  selinux_status: string | null;
+  apparmor_status: string | null;
+  ufw_active: boolean | null;
+  iptables_rule_count: number | null;
+  ssh_root_login_enabled: boolean | null;
+  ssh_password_auth_enabled: boolean | null;
+  collected_at: string;
+}
+
+export interface DevicePortInfo {
+  id: string;
+  port_number: number;
+  protocol: string;
+  service_name: string | null;
+  product: string | null;
+  version: string | null;
+  state: string;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface DeviceHistoryBundle {
+  ip_history: { id: string; old_ip: string | null; new_ip: string; changed_at: string }[];
+  scan_history: { id: string; status: string; response_time: number | null; created_at: string }[];
+  inventory_history: { id: string; change_type: string; component: string; description: string; created_at: string }[];
 }

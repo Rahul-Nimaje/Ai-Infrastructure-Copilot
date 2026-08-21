@@ -1,20 +1,26 @@
 import asyncio
 import socket
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-import random
 import uuid
 import re
 import shutil
 import ipaddress
-import hashlib
+import json
 import xml.etree.ElementTree as ET
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, func, and_, or_, desc
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
+from app.core.snmp_client import SnmpTarget, snmp_get, snmp_walk, vendor_from_sys_object_id
+from app.core import snmp_client
+from app.core.ssh_client import SshTarget, grab_banner
+from app.core import ssh_client
+from app.core.winrm_client import WinRmTarget, run_powershell
 from app.models.device import (
     Device,
     NetworkScan,
@@ -24,15 +30,28 @@ from app.models.device import (
     DeviceInventory,
     DeviceNetworkInterface,
     DeviceStorage,
+    DevicePartition,
     DeviceMemory,
     DeviceProcessor,
     DeviceInstalledSoftware,
     DeviceService,
-    DeviceInventoryHistory
+    DeviceProcess,
+    DeviceSecurity,
+    DevicePort,
+    DeviceInventoryHistory,
 )
 from app.models.credential import Credential
 from app.modules.credentials.service import resolve_credential_secret
 from app.modules.discovery.schemas import ScanStartRequest
+from py_shared.enums import (
+    CredentialType,
+    DeviceIdentificationConfidence,
+    DeviceScanStatus,
+    DeviceType,
+    OsType,
+    ScanMode,
+    ScanStatus,
+)
 
 
 def sanitize_scan_range(target_range: str) -> str:
@@ -99,11 +118,11 @@ def parse_nmap_xml(xml_content: str) -> list[dict]:
             state = status_el.attrib.get("state") if status_el is not None else "offline"
             if state != "up":
                 continue
-            
+
             ip_address = None
             mac_address = None
             vendor = None
-            
+
             for addr in host.findall("address"):
                 addrtype = addr.attrib.get("addrtype")
                 if addrtype == "ipv4":
@@ -111,24 +130,24 @@ def parse_nmap_xml(xml_content: str) -> list[dict]:
                 elif addrtype == "mac":
                     mac_address = addr.attrib.get("addr")
                     vendor = addr.attrib.get("vendor")
-            
+
             hostname = None
             hostnames_el = host.find("hostnames")
             if hostnames_el is not None:
                 hostname_el = hostnames_el.find("hostname")
                 if hostname_el is not None:
                     hostname = hostname_el.attrib.get("name")
-            
+
             dns_name = hostname if hostname and "." in hostname else None
             netbios_name = hostname.split(".")[0].upper() if hostname else None
-            
+
             response_time = None
             times_el = host.find("times")
             if times_el is not None:
                 srtt = times_el.attrib.get("srtt")
                 if srtt:
                     response_time = round(float(srtt) / 1000.0, 2)  # convert to ms
-            
+
             # Parse open ports
             ports = []
             open_ports_dict = {"ports": []}
@@ -139,7 +158,7 @@ def parse_nmap_xml(xml_content: str) -> list[dict]:
                     if state_el is not None and state_el.attrib.get("state") == "open":
                         port_id = int(port_el.attrib.get("portid"))
                         open_ports_dict["ports"].append(port_id)
-                        
+
                         service_name = ""
                         product = ""
                         version = ""
@@ -148,9 +167,10 @@ def parse_nmap_xml(xml_content: str) -> list[dict]:
                             service_name = service_el.attrib.get("name", "")
                             product = service_el.attrib.get("product", "")
                             version = service_el.attrib.get("version", "")
-                            
+
                         ports.append({
                             "port": port_id,
+                            "protocol": port_el.attrib.get("protocol", "tcp"),
                             "service": service_name,
                             "product": product,
                             "version": version
@@ -166,7 +186,7 @@ def parse_nmap_xml(xml_content: str) -> list[dict]:
                     match = re.search(r"(\d+(\.\d+)*)", os_name)
                     if match:
                         os_version = match.group(1)
-            
+
             name = hostname or (f"host-{ip_address.replace('.', '-')}" if ip_address else "unknown")
             if mac_address and not vendor:
                 vendor = lookup_vendor_by_mac(mac_address)
@@ -192,7 +212,7 @@ def parse_nmap_xml(xml_content: str) -> list[dict]:
 
 async def perform_manual_discovery(target_range: str) -> list[dict]:
     discovered = []
-    
+
     # 1. Parse IPs in the range
     ips_to_scan = []
     try:
@@ -211,7 +231,7 @@ async def perform_manual_discovery(target_range: str) -> list[dict]:
                 else:
                     end_ip_str = parts[1].strip()
                 end_ip = ipaddress.ip_address(end_ip_str)
-                
+
                 curr = start_ip
                 while curr <= end_ip:
                     ips_to_scan.append(str(curr))
@@ -249,7 +269,7 @@ async def perform_manual_discovery(target_range: str) -> list[dict]:
                 stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await proc.communicate()
-            
+
             hostname = None
             try:
                 loop = asyncio.get_running_loop()
@@ -261,7 +281,7 @@ async def perform_manual_discovery(target_range: str) -> list[dict]:
             ports_to_probe = [22, 23, 53, 80, 443, 139, 445, 3389, 5985, 5986, 161]
             open_ports = []
             ports_detail = []
-            
+
             async def check_port(port: int):
                 try:
                     reader, writer = await asyncio.wait_for(
@@ -276,6 +296,7 @@ async def perform_manual_discovery(target_range: str) -> list[dict]:
                     }
                     ports_detail.append({
                         "port": port,
+                        "protocol": "tcp",
                         "service": port_labels.get(port, "unknown"),
                         "product": "",
                         "version": ""
@@ -291,7 +312,7 @@ async def perform_manual_discovery(target_range: str) -> list[dict]:
                 mac = arp_table.get(ip)
                 vendor = lookup_vendor_by_mac(mac)
                 name = hostname or f"host-{ip.replace('.', '-')}"
-                
+
                 response_time = 10.0
                 if proc.returncode == 0:
                     match = re.search(r"time=(\d+(\.\d+)?)", stdout.decode())
@@ -322,230 +343,189 @@ async def perform_manual_discovery(target_range: str) -> list[dict]:
 
 
 def classify_device(name: str, vendor: str | None, open_ports: list[int], os_name: str | None) -> str:
+    """Final, cheapest-available heuristic tier for device identification —
+    name/vendor/port/OS-string pattern matching only. Never authoritative on
+    its own; identify_device() wraps this and caps its result at
+    'unverified' confidence (section 2 — never claim confirmed from a guess)."""
     name_lower = name.lower()
     os_lower = (os_name or "").lower()
     vendor_lower = (vendor or "").lower()
-    
+
     # 1. Hypervisors & Container Hosts
     if 8006 in open_ports or "proxmox" in name_lower or "proxmox" in os_lower:
-        return "proxmox"
+        return DeviceType.PROXMOX.value
     if 902 in open_ports or "esxi" in name_lower or "vmware" in os_lower:
-        return "vmware_esxi"
+        return DeviceType.VMWARE_ESXI.value
     if "hyper-v" in name_lower or "hyperv" in name_lower or "hyperv" in os_lower:
-        return "hyper-v"
+        return DeviceType.HYPER_V.value
     if "k8s" in name_lower or "kubernetes" in name_lower or 10250 in open_ports:
-        return "kubernetes_node"
+        return DeviceType.KUBERNETES_NODE.value
     if "docker" in name_lower or 2375 in open_ports or 2376 in open_ports:
-        return "docker_host"
-        
+        return DeviceType.DOCKER_HOST.value
+
     # 2. Virtual Machines
     if "vm" in name_lower or "replica" in name_lower or "virtual machine" in name_lower:
-        return "virtual_machine"
-        
+        return DeviceType.VIRTUAL_MACHINE.value
+
     # 3. Printers
     if 9100 in open_ports or 631 in open_ports or "printer" in name_lower or "laserjet" in name_lower or "jetdirect" in os_lower:
-        return "printer"
-        
+        return DeviceType.PRINTER.value
+
     # 4. NAS Devices
     if "nas" in name_lower or "synology" in name_lower or "qnap" in name_lower or 5000 in open_ports or "dsm" in os_lower:
-        return "nas"
-        
+        return DeviceType.NAS.value
+
     # 5. Access Points / IP Cameras / IoT
     if "ap-" in name_lower or "ubiquiti" in vendor_lower or "unifi" in name_lower:
-        return "access_point"
+        return DeviceType.ACCESS_POINT.value
     if "camera" in name_lower or "cam" in name_lower or 554 in open_ports:
-        return "ip_camera"
+        return DeviceType.IP_CAMERA.value
     if "iot" in name_lower or "smart" in name_lower:
-        return "iot"
+        return DeviceType.IOT.value
 
     # 6. Firewalls
     if "firewall" in name_lower or "fortigate" in name_lower or "pfsense" in name_lower or "asa" in os_lower or "checkpoint" in vendor_lower:
-        return "firewall"
-        
+        return DeviceType.FIREWALL.value
+
     # 7. Routers & Switches
     if "router" in name_lower or "gateway" in name_lower or "isr" in name_lower or "edge" in name_lower:
-        return "router"
+        return DeviceType.ROUTER.value
     if "switch" in name_lower or "sw-" in name_lower or "catalyst" in name_lower:
-        return "switch"
-        
+        return DeviceType.SWITCH.value
+
     # 8. OS-based fallback
     if "windows" in os_lower or 3389 in open_ports or 5985 in open_ports:
-        return "windows"
+        return DeviceType.WINDOWS.value
     if "linux" in os_lower or "ubuntu" in os_lower or "centos" in os_lower or "redhat" in os_lower or 22 in open_ports:
-        return "linux"
+        return DeviceType.LINUX.value
     if "mac" in os_lower or "darwin" in os_lower:
-        return "macos"
-        
-    return "unknown"
+        return DeviceType.MACOS.value
+
+    return DeviceType.UNKNOWN.value
 
 
-def attempt_device_authentication(ip: str, open_port_ids: list[int], credentials: list[Any], device_type: str, name: str) -> dict:
-    """
-    Attempts connection and authentication based on open ports.
-    If valid credentials are provided, decrypts and populates high-fidelity authenticated data.
-    """
-    result = {
-        "auth_success": False,
-        "auth_error": None,
-        "dns_name": None,
-        "netbios_name": name.split(".")[0].upper() if name else None,
-        "mdns_name": f"{name}.local" if name else None,
-        "os_version": None,
-        "device_vendor": None,
-        "serial_number": None,
-        "uuid": None,
-        "asset_tag": None,
-        "bios_version": None,
-        "cpu_details": None,
-        "memory_ram": None,
-        "storage_details": None,
-        "installed_software": None,
-        "installed_updates": None,
-        "logged_in_user": None,
-        "uptime": None,
-        "domain_info": None,
-        "interfaces": None,
-        "raw_details": None
-    }
+@dataclass
+class DeviceIdentification:
+    """Result of identify_device() — section 2. `confidence` is CONFIRMED
+    only when a signal that cannot lie (SNMP/WinRM/SSH-banner response) was
+    obtained; everything derived from names/ports/vendor OUI is UNVERIFIED."""
 
-    relevant_creds = []
-    protocol_tried = None
-    
-    if (5985 in open_port_ids or 5986 in open_port_ids) and device_type == "windows":
-        protocol_tried = "winrm"
-        relevant_creds = [c for c in credentials if c.credential_type == "winrm"]
-    elif 22 in open_port_ids and device_type in ["linux", "macos", "virtual_machine", "docker_host"]:
-        protocol_tried = "ssh"
-        relevant_creds = [c for c in credentials if c.credential_type in ["ssh_password", "ssh_key"]]
-    elif 161 in open_port_ids or device_type in ["router", "switch", "firewall", "printer", "nas"]:
-        protocol_tried = "snmp"
-        relevant_creds = [c for c in credentials if c.credential_type in ["snmp", "api_key"]]
-
-    if not relevant_creds:
-        if protocol_tried:
-            result["auth_error"] = f"No configured credentials matching protocol: {protocol_tried}"
-        return result
-
-    # Simulate/Authenticate check
-    auth_ok = True
-    active_cred = relevant_creds[0]
-    
-    if auth_ok:
-        result["auth_success"] = True
-        h_suffix = hashlib.md5(ip.encode()).hexdigest()[:8].upper()
-        result["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{ip}.copilot.internal"))
-        
-        if protocol_tried == "winrm" or device_type == "windows":
-            result["serial_number"] = f"WIN-SN-{h_suffix}"
-            result["asset_tag"] = f"WIN-AST-{h_suffix[:4]}"
-            result["os_version"] = "10.0.19045 Build 19045"
-            result["device_vendor"] = "Dell Inc."
-            result["bios_version"] = "Dell A12 (04/18/2023)"
-            result["cpu_details"] = "Intel(R) Core(TM) i7-10700 CPU @ 2.90GHz"
-            result["memory_ram"] = "16 GB DDR4"
-            result["storage_details"] = "C: 256GB (80GB Free), D: 1TB (620GB Free)"
-            result["installed_software"] = ["Google Chrome", "Adobe Acrobat", "Python 3.11", "Copilot agent"]
-            result["installed_updates"] = ["KB5025239", "KB5022842"]
-            result["logged_in_user"] = "CORP\\Administrator"
-            result["uptime"] = "5 days, 12 hours"
-            result["domain_info"] = "corp.internal"
-            result["interfaces"] = [
-                {"name": "Ethernet0", "ip": ip, "mac": "00:15:5D:AA:BB:CC", "status": "up"}
-            ]
-            result["raw_details"] = {"wmi_status": "OK", "powershell_version": "5.1"}
-            
-        elif protocol_tried == "ssh" or device_type in ["linux", "virtual_machine", "docker_host"]:
-            result["serial_number"] = f"LNX-SN-{h_suffix}"
-            result["asset_tag"] = f"LNX-AST-{h_suffix[:4]}"
-            result["os_version"] = "Ubuntu 22.04.2 LTS"
-            result["device_vendor"] = "Supermicro"
-            result["bios_version"] = "AMI v4.6 (12/02/2022)"
-            result["cpu_details"] = "AMD EPYC 7502 32-Core Processor"
-            result["memory_ram"] = "32 GB"
-            result["storage_details"] = "/dev/sda1 (120GB, 45% used), /dev/sdb (500GB, 12% used)"
-            result["installed_software"] = ["openssh-server", "nginx", "docker-ce", "python3"]
-            result["installed_updates"] = ["libc6 (2.35)", "openssl (3.0.2)"]
-            result["logged_in_user"] = "ubuntu"
-            result["uptime"] = "24 days, 3 hours"
-            result["interfaces"] = [
-                {"name": "eth0", "ip": ip, "mac": "00:1A:2B:3C:4D:EE", "status": "up"}
-            ]
-            result["raw_details"] = {"kernel": "5.15.0-72-generic", "shell": "/bin/bash"}
-            
-        elif device_type == "macos":
-            result["serial_number"] = f"APL-SN-{h_suffix}"
-            result["asset_tag"] = f"MAC-AST-{h_suffix[:4]}"
-            result["os_version"] = "macOS Ventura 13.4"
-            result["device_vendor"] = "Apple Inc."
-            result["bios_version"] = "Apple BootROM"
-            result["cpu_details"] = "Apple M2 Pro"
-            result["memory_ram"] = "16 GB"
-            result["storage_details"] = "Macintosh HD (512GB, 210GB Free)"
-            result["uptime"] = "8 days, 1 hour"
-            
-        elif protocol_tried == "snmp" or device_type in ["router", "switch", "firewall", "printer", "nas"]:
-            result["serial_number"] = f"NET-SN-{h_suffix}"
-            result["asset_tag"] = f"NET-AST-{h_suffix[:4]}"
-            result["device_vendor"] = "Cisco" if device_type == "router" else "MikroTik"
-            result["os_version"] = "IOS-XE 17.6.3"
-            result["cpu_details"] = "ARM Quad-Core"
-            result["memory_ram"] = "4 GB"
-            result["uptime"] = "142 days, 9 hours"
-            result["interfaces"] = [
-                {"name": "GigabitEthernet1", "status": "up", "speed": "1Gbps"},
-                {"name": "GigabitEthernet2", "status": "down", "speed": "1Gbps"}
-            ]
-            result["raw_details"] = {"snmp_version": "v2c", "sysObjectID": "1.3.6.1.4.1.9.1.2827"}
-            
-    else:
-        result["auth_error"] = f"Authentication attempt timed out or failed with {active_cred.name}"
-        
-    return result
+    device_type: str
+    confidence: str
+    method: str | None = None
+    os_family: str | None = None
+    vendor: str | None = None
 
 
-def generate_mock_devices_for_range(target_range: str) -> list[dict]:
-    base_ip = "192.168.1"
-    sanitized = sanitize_scan_range(target_range)
-    if sanitized and "." in sanitized:
-        # Find first segment with dots
-        subnets = [s.strip() for s in sanitized.split(",") if s.strip()]
-        for sub in subnets:
-            if "." in sub:
-                parts = sub.split(".")
-                if len(parts) >= 3:
-                    base_ip = f"{parts[0]}.{parts[1]}.{parts[2]}"
-                    break
+async def identify_device(
+    ip: str,
+    port_ids: list[int],
+    name: str,
+    vendor: str | None,
+    os_name: str | None,
+    *,
+    snmp_secret: dict | None = None,
+    winrm_secret: dict | None = None,
+) -> DeviceIdentification:
+    """Multi-signal device identification (section 2), cheapest/most-reliable
+    signal first, stopping at the first CONFIRMED result. Never returns
+    CONFIRMED from a name/port/vendor heuristic alone."""
 
-    candidates = [
-        {"suffix": "1", "name": "core-gateway", "vendor": "Cisco", "model": "ISR4331", "type": "router", "os": "IOS-XE", "ports": [22, 80, 443]},
-        {"suffix": "2", "name": "core-switch-01", "vendor": "MikroTik", "model": "CRS326", "type": "switch", "os": "RouterOS", "ports": [22, 80, 161]},
-        {"suffix": "10", "name": "dc-prod-01", "vendor": "Dell", "model": "PowerEdge R740", "type": "windows_server", "os": "Windows Server 2022", "ports": [135, 445, 3389, 5985, 5986]},
-        {"suffix": "20", "name": "app-prod-02", "vendor": "HP", "model": "ProLiant DL360", "type": "linux_server", "os": "Ubuntu 22.04 LTS", "ports": [22, 80, 443, 9000]},
-        {"suffix": "30", "name": "ap-floor1", "vendor": "Ubiquiti", "model": "UniFi AP-AC-Pro", "type": "access_point", "os": "UniFi OS", "ports": [22, 443]},
-        {"suffix": "50", "name": "printer-office", "vendor": "HP", "model": "LaserJet M404", "type": "printer", "os": "JetDirect", "ports": [80, 9100]},
-        {"suffix": "15", "name": "nas-backup", "vendor": "Synology", "model": "DS920+", "type": "nas", "os": "DSM 7.1", "ports": [80, 443, 5000]},
-        {"suffix": "100", "name": "vm-db-replica", "vendor": "VMware", "model": "ESXi VM", "type": "virtual_machine", "os": "RedHat Enterprise Linux 9", "ports": [22, 5432]},
-        {"suffix": "254", "name": "edge-firewall", "vendor": "Cisco", "model": "Firepower 1010", "type": "firewall", "os": "ASA", "ports": [22, 443]},
-    ]
-    
-    discovered = []
-    for cand in candidates:
-        ip = f"{base_ip}.{cand['suffix']}"
-        mac = f"00:1A:2B:3C:4D:{int(cand['suffix']):02X}"
-        response_time = round(random.uniform(0.5, 45.0), 2)
-        discovered.append({
-            "ip_address": ip,
-            "mac_address": mac,
-            "vendor": cand["vendor"],
-            "model": cand["model"],
-            "name": cand["name"],
-            "device_type": cand["type"],
-            "operating_system": cand["os"],
-            "response_time": response_time,
-            "status": "online",
-            "open_ports": {"ports": cand["ports"]}
-        })
-    return discovered
+    # 1. SNMP sysObjectID probe — a device that speaks SNMP with a valid
+    # community is unambiguously network-managed gear.
+    if 161 in port_ids:
+        community = (snmp_secret or {}).get("secret") or "public"
+        snmp_target = SnmpTarget(host=ip, community=community, timeout=2)
+        try:
+            sys_object_id = await snmp_get(snmp_target, snmp_client.OID_SYS_OBJECT_ID)
+        except Exception:
+            sys_object_id = None
+        if sys_object_id:
+            detected_vendor = vendor_from_sys_object_id(sys_object_id)
+            dtype = DeviceType.SWITCH.value if 23 in port_ids else DeviceType.ROUTER.value
+            return DeviceIdentification(
+                device_type=dtype,
+                confidence=DeviceIdentificationConfidence.CONFIRMED.value,
+                method="snmp",
+                vendor=detected_vendor,
+            )
+
+    # 2. WinRM reachability + one lightweight CIM call — only attempted with
+    # a WinRM credential available; absence of a credential means abstain,
+    # not guess.
+    if (5985 in port_ids or 5986 in port_ids) and winrm_secret:
+        port = 5986 if 5986 in port_ids else 5985
+        target = WinRmTarget(
+            host=ip,
+            username=winrm_secret.get("username", ""),
+            password=winrm_secret.get("secret", ""),
+            port=port,
+            ssl=(port == 5986),
+        )
+        try:
+            stdout, _stderr, rc = await asyncio.wait_for(
+                run_in_threadpool(run_powershell, target, "(Get-CimInstance Win32_OperatingSystem).Caption"),
+                timeout=4.0,
+            )
+            if rc == 0 and stdout.strip():
+                return DeviceIdentification(
+                    device_type=DeviceType.WINDOWS.value,
+                    confidence=DeviceIdentificationConfidence.CONFIRMED.value,
+                    method="winrm",
+                    os_family=OsType.WINDOWS.value,
+                )
+        except Exception:
+            pass
+
+    best_unverified: DeviceIdentification | None = None
+
+    # 3. SSH banner grab — no credential needed, distinguishes network-OS
+    # SSH banners (e.g. Cisco) from generic OpenSSH/Dropbear.
+    if 22 in port_ids:
+        banner = await grab_banner(ip, 22)
+        if banner:
+            lower = banner.lower()
+            if "cisco" in lower:
+                return DeviceIdentification(
+                    device_type=DeviceType.ROUTER.value,
+                    confidence=DeviceIdentificationConfidence.CONFIRMED.value,
+                    method="ssh",
+                    vendor="Cisco",
+                )
+            if "openssh" in lower or "dropbear" in lower:
+                best_unverified = DeviceIdentification(
+                    device_type=DeviceType.LINUX.value,
+                    confidence=DeviceIdentificationConfidence.UNVERIFIED.value,
+                    method="ssh",
+                    os_family=OsType.LINUX.value,
+                )
+
+    # 4. SMB probe (no auth) — weak windows-leaning signal only.
+    if best_unverified is None and 445 in port_ids:
+        best_unverified = DeviceIdentification(
+            device_type=DeviceType.WINDOWS.value,
+            confidence=DeviceIdentificationConfidence.UNVERIFIED.value,
+            method="smb",
+            os_family=OsType.WINDOWS.value,
+        )
+
+    # 5. Name/vendor/port heuristic — final fallback tier, capped at unverified.
+    heuristic_type = classify_device(name, vendor, port_ids, os_name)
+    if heuristic_type != DeviceType.UNKNOWN.value:
+        return DeviceIdentification(
+            device_type=heuristic_type,
+            confidence=DeviceIdentificationConfidence.UNVERIFIED.value,
+            method="hostname_heuristic" if name and not name.startswith("host-") else "port_heuristic",
+        )
+
+    if best_unverified:
+        return best_unverified
+
+    return DeviceIdentification(
+        device_type=DeviceType.UNKNOWN.value,
+        confidence=DeviceIdentificationConfidence.UNKNOWN.value,
+        method=None,
+    )
 
 
 async def list_devices(
@@ -561,6 +541,7 @@ async def list_devices(
     vendor: str | None = None,
     response_time_bucket: str | None = None,
     last_seen_bucket: str | None = None,
+    scan_status: str | None = None,
     sort_by: str = "last_seen_at",
     sort_order: str = "desc",
 ) -> tuple[list[Device], int]:
@@ -581,6 +562,8 @@ async def list_devices(
         query = query.where(Device.status == status_filter.lower())
     if device_type:
         query = query.where(Device.device_type == device_type.lower())
+    if scan_status:
+        query = query.where(Device.scan_status == scan_status.lower())
     if operating_system:
         if operating_system.lower() == "unknown":
             query = query.where(Device.operating_system.is_(None))
@@ -696,14 +679,18 @@ async def start_scan(
     actor_id: uuid.UUID
 ) -> NetworkScan:
     # Check if there is an active running scan
-    active_q = await db.execute(select(NetworkScan).where(and_(NetworkScan.organization_id == organization_id, NetworkScan.status == "running")))
+    active_q = await db.execute(select(NetworkScan).where(and_(
+        NetworkScan.organization_id == organization_id,
+        NetworkScan.status.in_([ScanStatus.PENDING.value, ScanStatus.DISCOVERING.value, ScanStatus.IDENTIFYING.value, ScanStatus.SCANNING.value, "running"]),
+    )))
     if active_q.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A scan is already in progress")
 
+    scan_mode = payload.scan_mode.value if hasattr(payload.scan_mode, "value") else str(payload.scan_mode)
     scan = NetworkScan(
         organization_id=organization_id,
-        status="pending",
-        scan_type=payload.scan_type,
+        status=ScanStatus.PENDING.value,
+        scan_type=scan_mode,
         scan_range=payload.target_range,
         created_by_id=actor_id
     )
@@ -719,8 +706,9 @@ async def stop_scan(db: AsyncSession, organization_id: uuid.UUID, scan_id: uuid.
     if not scan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan job not found")
 
-    if scan.status in ["pending", "running"]:
-        scan.status = "failed"
+    active_statuses = {ScanStatus.PENDING.value, ScanStatus.DISCOVERING.value, ScanStatus.IDENTIFYING.value, ScanStatus.SCANNING.value, "pending", "running"}
+    if scan.status in active_statuses:
+        scan.status = ScanStatus.CANCELLED.value
         scan.completed_at = datetime.utcnow()
         scan.error_message = "Scan stopped by operator"
         await write_audit_log(
@@ -736,66 +724,149 @@ async def stop_scan(db: AsyncSession, organization_id: uuid.UUID, scan_id: uuid.
     return scan
 
 
+async def resolve_device_identity(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    uuid_val: str | None,
+    serial_val: str | None,
+    mac: str | None,
+    hostname: str | None,
+    ip: str | None,
+) -> tuple[Device | None, bool]:
+    """Section 7 — identity priority: System UUID -> MAC -> Serial ->
+    Hostname -> IP-as-fallback-only. Returns (existing_device_or_None,
+    ip_mac_mismatch) — the caller decides create-vs-update-vs-supersede from
+    the mismatch flag; this function only resolves identity."""
+    for column, value in [
+        (Device.uuid, uuid_val),
+        (Device.mac_address, mac),
+        (Device.serial_number, serial_val),
+        (Device.name, hostname),
+    ]:
+        if not value:
+            continue
+        device_q = await db.execute(select(Device).where(and_(
+            Device.organization_id == organization_id,
+            column == value,
+            Device.deleted_at.is_(None),
+        )))
+        device = device_q.scalar_one_or_none()
+        if device:
+            mismatch = bool(ip and device.ip_address and mac and device.mac_address and device.mac_address != mac)
+            return device, mismatch
+
+    if ip:
+        device_q = await db.execute(select(Device).where(and_(
+            Device.organization_id == organization_id,
+            Device.ip_address == ip,
+            Device.deleted_at.is_(None),
+        )))
+        device = device_q.scalar_one_or_none()
+        if device:
+            mismatch = bool(mac and device.mac_address and device.mac_address != mac)
+            return device, mismatch
+
+    return None, False
+
+
+def _network_capable_credential_types() -> dict[str, list[str]]:
+    return {
+        "winrm": [CredentialType.WINRM.value],
+        "ssh": [CredentialType.SSH_PASSWORD.value, CredentialType.SSH_KEY.value],
+        "snmp": [CredentialType.SNMP_V2C.value, CredentialType.SNMP_V3.value],
+    }
+
+
 async def run_discovery_scan_task(
     db_session_factory: Any,
     organization_id: uuid.UUID,
     scan_id: uuid.UUID,
-    actor_id: uuid.UUID
-) -> None:
+    actor_id: uuid.UUID,
+) -> list[uuid.UUID]:
+    """Discovery + identification phase (sections 1-2, 6-7, 9). Runs Nmap
+    (or the manual fallback), classifies/identifies every host per scan
+    mode, persists devices with corrected dedup priority, and — for Full
+    mode only — returns the device IDs that need credentialed inventory
+    collection (the caller, e.g. the Celery task wrapper, dispatches that
+    separately via run_inventory_collection/run_device_inventory_task)."""
     async with db_session_factory() as db:
         scan_q = await db.execute(select(NetworkScan).where(NetworkScan.id == scan_id))
         scan = scan_q.scalar_one_or_none()
-        if not scan or scan.status != "pending":
-            return
+        if not scan or scan.status != ScanStatus.PENDING.value:
+            return []
 
-        scan.status = "running"
+        scan_mode = scan.scan_type if scan.scan_type in {m.value for m in ScanMode} else ScanMode.STANDARD.value
+        scan.status = ScanStatus.DISCOVERING.value
         scan.started_at = datetime.utcnow()
         await db.commit()
 
         start_time = datetime.utcnow()
         error_msg = None
-        discovered = []
-        
+        discovered: list[dict] = []
+
         new_count = 0
         updated_count = 0
         failed_count = 0
         auth_fail_count = 0
         online_count = 0
         offline_count = 0
+        full_scan_candidates: list[uuid.UUID] = []
 
         try:
-            # 1. Fetch credentials
+            # 1. Fetch credentials (used for identification signals + later Full collection)
             cred_q = await db.execute(select(Credential).where(and_(
                 Credential.organization_id == organization_id,
                 Credential.deleted_at.is_(None)
             )))
             credentials = list(cred_q.scalars().all())
 
-            # 2. Run Nmap scan
+            snmp_secret = None
+            snmp_cred = next((c for c in credentials if c.credential_type in _network_capable_credential_types()["snmp"]), None)
+            if snmp_cred:
+                try:
+                    snmp_secret = await resolve_credential_secret(db, organization_id=organization_id, credential_id=snmp_cred.id)
+                except Exception:
+                    snmp_secret = None
+
+            winrm_secret = None
+            winrm_cred = next((c for c in credentials if c.credential_type in _network_capable_credential_types()["winrm"]), None)
+            if winrm_cred:
+                try:
+                    winrm_secret = await resolve_credential_secret(db, organization_id=organization_id, credential_id=winrm_cred.id)
+                except Exception:
+                    winrm_secret = None
+
+            # 2. Run Nmap scan — Quick = ping sweep only; Standard/Full add
+            # service/version + OS detection.
             sanitized_range = sanitize_scan_range(scan.scan_range)
             nmap_path = shutil.which("nmap")
-            
+
             if nmap_path:
                 try:
-                    if scan.scan_type == "ping":
+                    if scan_mode == ScanMode.QUICK.value:
                         cmd = [nmap_path, "-sn", "-oX", "-", sanitized_range]
                     else:
-                        cmd = [nmap_path, "-sT", "-p", "22,23,53,80,443,139,445,3389,5985,5986,161,631,9100,902,8006", "-oX", "-", sanitized_range]
-                    
+                        cmd = [
+                            nmap_path, "-sT", "-sV", "-O",
+                            "-p", "22,23,53,80,443,139,445,3389,5985,5986,161,631,9100,902,8006",
+                            "-oX", "-", sanitized_range,
+                        ]
+
                     process = await asyncio.create_subprocess_exec(
                         *cmd,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE
                     )
                     stdout, stderr = await process.communicate()
-                    
+
                     if process.returncode == 0:
                         discovered = parse_nmap_xml(stdout.decode())
                     else:
                         error_msg = f"Nmap exited with code {process.returncode}: {stderr.decode()}"
                 except Exception as e:
                     error_msg = f"Failed to execute nmap: {str(e)}"
-            
+
             # Fallback discovery mechanism when nmap is missing/fails/returns empty
             if not discovered:
                 print("Nmap scan returned no hosts or failed. Trying manual ICMP ping/ARP/DNS discovery sweep...")
@@ -803,14 +874,12 @@ async def run_discovery_scan_task(
                     discovered = await perform_manual_discovery(scan.scan_range)
                 except Exception as ex:
                     print(f"Manual discovery failed: {ex}")
-            
-            # Final fallback to realistic simulation if manual sweep also returned nothing
-            if not discovered:
-                await asyncio.sleep(2.0)
-                discovered = generate_mock_devices_for_range(scan.scan_range)
 
-            # Store mapping of processed devices
-            processed_device_ids = set()
+            if scan_mode != ScanMode.QUICK.value:
+                scan.status = ScanStatus.IDENTIFYING.value
+                await db.commit()
+
+            processed_device_ids: set[uuid.UUID] = set()
 
             for cand in discovered:
                 ip = cand["ip_address"]
@@ -820,228 +889,161 @@ async def run_discovery_scan_task(
                 response_time = cand["response_time"]
                 open_ports = cand.get("open_ports", {"ports": []})
                 ports_list = open_ports.get("ports", [])
-                
-                # Fingerprinting OS & type
+                ports_detail = cand.get("ports_detail", [])
                 os_name = cand.get("operating_system")
-                device_type = classify_device(name, vendor, ports_list, os_name)
-                
-                # Perform simulated/real authentication
-                auth_res = attempt_device_authentication(ip, ports_list, credentials, device_type, name)
-                
-                # Track auth failures separately
-                if auth_res["auth_error"] and "No configured credentials" not in auth_res["auth_error"]:
-                    auth_fail_count += 1
-                
-                # Deduplication priority matching:
-                # 1. UUID
-                # 2. Serial Number
-                # 3. MAC Address
-                # 4. Asset Tag
-                device = None
-                uuid_val = auth_res["uuid"]
-                serial_val = auth_res["serial_number"]
-                asset_tag_val = auth_res["asset_tag"]
-                
-                if uuid_val:
-                    device_q = await db.execute(select(Device).where(and_(
-                        Device.organization_id == organization_id,
-                        Device.uuid == uuid_val,
-                        Device.deleted_at.is_(None)
-                    )))
-                    device = device_q.scalar_one_or_none()
-                    
-                if not device and serial_val:
-                    device_q = await db.execute(select(Device).where(and_(
-                        Device.organization_id == organization_id,
-                        Device.serial_number == serial_val,
-                        Device.deleted_at.is_(None)
-                    )))
-                    device = device_q.scalar_one_or_none()
-                    
-                if not device and mac:
-                    device_q = await db.execute(select(Device).where(and_(
-                        Device.organization_id == organization_id,
-                        Device.mac_address == mac,
-                        Device.deleted_at.is_(None)
-                    )))
-                    device = device_q.scalar_one_or_none()
-                    
-                if not device and asset_tag_val:
-                    device_q = await db.execute(select(Device).where(and_(
-                        Device.organization_id == organization_id,
-                        Device.asset_tag == asset_tag_val,
-                        Device.deleted_at.is_(None)
-                    )))
-                    device = device_q.scalar_one_or_none()
 
-                if not device and ip:
-                    device_q = await db.execute(select(Device).where(and_(
-                        Device.organization_id == organization_id,
-                        Device.ip_address == ip,
-                        Device.deleted_at.is_(None)
-                    )))
-                    candidates = list(device_q.scalars().all())
-                    if candidates:
-                        for cand_device in candidates:
-                            if mac and cand_device.mac_address == mac:
-                                device = cand_device
-                                break
-                        if not device:
-                            for cand_device in candidates:
-                                if not cand_device.mac_address:
-                                    device = cand_device
-                                    break
-                            if not device:
-                                device = candidates[0]
-
-                if device:
-                    # Check for replacement: same IP but different MAC
-                    if ip and device.ip_address == ip and mac and device.mac_address and device.mac_address != mac:
-                        # Replaced physical device!
-                        old_device = device
-                        old_device.status = "offline"
-                        old_device.ip_address = None
-                        await db.flush()
-
-                        # Record IP history for old device losing the IP
-                        db.add(DeviceIPHistory(
-                            organization_id=organization_id,
-                            device_id=old_device.id,
-                            old_ip=ip,
-                            new_ip=None,
-                            changed_at=datetime.utcnow()
-                        ))
-                        # Record status history for old device
-                        db.add(DeviceStatusHistory(
-                            organization_id=organization_id,
-                            device_id=old_device.id,
-                            status="offline",
-                            hostname=old_device.name,
-                            vendor=old_device.vendor,
-                            operating_system=old_device.operating_system,
-                            created_at=datetime.utcnow()
-                        ))
-
-                        # Create new device record
-                        device = Device(
-                            organization_id=organization_id,
-                            device_type=device_type,
-                            name=name,
-                            ip_address=ip,
-                            mac_address=mac,
-                            vendor=vendor,
-                            operating_system=os_name or auth_res["os_version"],
-                            status="online",
-                            response_time=response_time,
-                            open_ports=open_ports,
-                            last_seen_at=datetime.utcnow(),
-                            scan_timestamp=start_time,
-                            **{k: v for k, v in auth_res.items() if k not in ["uuid", "serial_number", "asset_tag"]}
-                        )
-                        device.uuid = uuid_val
-                        device.serial_number = serial_val
-                        device.asset_tag = asset_tag_val
-                        db.add(device)
-                        await db.flush()
-
-                        # Record IP history for new device
-                        db.add(DeviceIPHistory(
-                            organization_id=organization_id,
-                            device_id=device.id,
-                            old_ip=None,
-                            new_ip=ip,
-                            changed_at=datetime.utcnow()
-                        ))
-                        new_count += 1
-                    else:
-                        # IP changed but MAC is the same
-                        if ip and device.ip_address != ip:
-                            db.add(DeviceIPHistory(
-                                organization_id=organization_id,
-                                device_id=device.id,
-                                old_ip=device.ip_address,
-                                new_ip=ip,
-                                changed_at=datetime.utcnow()
-                            ))
-                            device.ip_address = ip
-
-                        # Update existing device record
-                        device.status = "online"
-                        device.response_time = response_time
-                        if name:
-                            device.name = name
-                        if vendor:
-                            device.vendor = vendor
-                        if os_name:
-                            device.operating_system = os_name
-                        if device_type != "unknown":
-                            device.device_type = device_type
-                        if open_ports:
-                            device.open_ports = open_ports
-                        device.last_seen_at = datetime.utcnow()
-                        device.scan_timestamp = start_time
-                        
-                        # Populate authenticated details
-                        for k, v in auth_res.items():
-                            if v is not None:
-                                setattr(device, k, v)
-                                
-                        await db.flush()
-                        updated_count += 1
+                if scan_mode == ScanMode.QUICK.value:
+                    identification = DeviceIdentification(
+                        device_type=DeviceType.UNKNOWN.value,
+                        confidence=DeviceIdentificationConfidence.UNKNOWN.value,
+                        method=None,
+                    )
                 else:
-                    # Completely new device
+                    identification = await identify_device(
+                        ip, ports_list, name, vendor, os_name,
+                        snmp_secret=snmp_secret, winrm_secret=winrm_secret,
+                    )
+
+                device, ip_mac_mismatch = await resolve_device_identity(
+                    db, organization_id,
+                    uuid_val=None, serial_val=None, mac=mac, hostname=name, ip=ip,
+                )
+
+                if device and ip_mac_mismatch:
+                    # Section 7 — same IP, different MAC: supersede. Old
+                    # device is preserved as historical/offline, a new
+                    # device row is created for the new physical device.
+                    old_device = device
+                    old_device.status = "offline"
+                    old_device.scan_status = DeviceScanStatus.OFFLINE.value
+                    old_device.ip_address = None
+                    await db.flush()
+
+                    db.add(DeviceIPHistory(
+                        organization_id=organization_id, device_id=old_device.id,
+                        old_ip=ip, new_ip=None, changed_at=datetime.utcnow(),
+                    ))
+                    db.add(DeviceStatusHistory(
+                        organization_id=organization_id, device_id=old_device.id,
+                        status="offline", hostname=old_device.name, vendor=old_device.vendor,
+                        operating_system=old_device.operating_system, created_at=datetime.utcnow(),
+                    ))
+
                     device = Device(
                         organization_id=organization_id,
-                        device_type=device_type,
+                        device_type=identification.device_type,
                         name=name,
                         ip_address=ip,
                         mac_address=mac,
-                        vendor=vendor,
-                        operating_system=os_name or auth_res["os_version"],
+                        vendor=identification.vendor or vendor,
+                        operating_system=os_name,
                         status="online",
                         response_time=response_time,
                         open_ports=open_ports,
                         last_seen_at=datetime.utcnow(),
                         scan_timestamp=start_time,
-                        **{k: v for k, v in auth_res.items() if k not in ["uuid", "serial_number", "asset_tag"]}
+                        scan_status=DeviceScanStatus.DISCOVERED.value,
+                        identification_confidence=identification.confidence,
+                        identification_method=identification.method,
                     )
-                    device.uuid = uuid_val
-                    device.serial_number = serial_val
-                    device.asset_tag = asset_tag_val
                     db.add(device)
                     await db.flush()
-
                     db.add(DeviceIPHistory(
+                        organization_id=organization_id, device_id=device.id,
+                        old_ip=None, new_ip=ip, changed_at=datetime.utcnow(),
+                    ))
+                    new_count += 1
+                elif device:
+                    if ip and device.ip_address != ip:
+                        db.add(DeviceIPHistory(
+                            organization_id=organization_id, device_id=device.id,
+                            old_ip=device.ip_address, new_ip=ip, changed_at=datetime.utcnow(),
+                        ))
+                        device.ip_address = ip
+
+                    device.status = "online"
+                    device.response_time = response_time
+                    if name:
+                        device.name = name
+                    if identification.vendor or vendor:
+                        device.vendor = identification.vendor or vendor
+                    if os_name:
+                        device.operating_system = os_name
+                    if identification.device_type != DeviceType.UNKNOWN.value:
+                        device.device_type = identification.device_type
+                        device.identification_confidence = identification.confidence
+                        device.identification_method = identification.method
+                    if open_ports:
+                        device.open_ports = open_ports
+                    device.last_seen_at = datetime.utcnow()
+                    device.scan_timestamp = start_time
+                    if device.scan_status in (None, DeviceScanStatus.OFFLINE.value):
+                        device.scan_status = DeviceScanStatus.DISCOVERED.value
+
+                    await db.flush()
+                    updated_count += 1
+                else:
+                    device = Device(
                         organization_id=organization_id,
-                        device_id=device.id,
-                        old_ip=None,
-                        new_ip=ip,
-                        changed_at=datetime.utcnow()
+                        device_type=identification.device_type,
+                        name=name,
+                        ip_address=ip,
+                        mac_address=mac,
+                        vendor=identification.vendor or vendor,
+                        operating_system=os_name,
+                        status="online",
+                        response_time=response_time,
+                        open_ports=open_ports,
+                        last_seen_at=datetime.utcnow(),
+                        scan_timestamp=start_time,
+                        scan_status=DeviceScanStatus.DISCOVERED.value,
+                        identification_confidence=identification.confidence,
+                        identification_method=identification.method,
+                    )
+                    db.add(device)
+                    await db.flush()
+                    db.add(DeviceIPHistory(
+                        organization_id=organization_id, device_id=device.id,
+                        old_ip=None, new_ip=ip, changed_at=datetime.utcnow(),
                     ))
                     new_count += 1
 
                 processed_device_ids.add(device.id)
                 online_count += 1
 
-                # Add DeviceScanHistory link
+                # Persist real port/service data (section 8 — previously
+                # discarded after nmap XML parse) for Standard/Full scans.
+                if scan_mode != ScanMode.QUICK.value and ports_detail:
+                    existing_ports_q = await db.execute(select(DevicePort).where(DevicePort.device_id == device.id))
+                    for p in existing_ports_q.scalars().all():
+                        await db.delete(p)
+                    await db.flush()
+                    now = datetime.utcnow()
+                    for p in ports_detail:
+                        db.add(DevicePort(
+                            organization_id=organization_id, device_id=device.id, scan_id=scan_id,
+                            port_number=p["port"], protocol=p.get("protocol", "tcp"),
+                            service_name=p.get("service") or None, product=p.get("product") or None,
+                            version=p.get("version") or None, state="open",
+                            first_seen_at=now, last_seen_at=now,
+                        ))
+
                 db.add(DeviceScanHistory(
-                    organization_id=organization_id,
-                    scan_id=scan_id,
-                    device_id=device.id,
-                    status="online",
-                    response_time=response_time
+                    organization_id=organization_id, scan_id=scan_id, device_id=device.id,
+                    status="online", response_time=response_time,
+                ))
+                db.add(DeviceStatusHistory(
+                    organization_id=organization_id, device_id=device.id, status="online",
+                    response_time=response_time, hostname=device.name, vendor=device.vendor,
+                    operating_system=device.operating_system,
                 ))
 
-                # Add DeviceStatusHistory link
-                db.add(DeviceStatusHistory(
-                    organization_id=organization_id,
-                    device_id=device.id,
-                    status="online",
-                    response_time=response_time,
-                    hostname=device.name,
-                    vendor=device.vendor,
-                    operating_system=device.operating_system
-                ))
+                if scan_mode == ScanMode.FULL.value and identification.device_type in {
+                    DeviceType.WINDOWS.value, DeviceType.LINUX.value, DeviceType.MACOS.value,
+                    DeviceType.ROUTER.value, DeviceType.SWITCH.value, DeviceType.FIREWALL.value,
+                    DeviceType.ACCESS_POINT.value,
+                }:
+                    full_scan_candidates.append(device.id)
 
             # --- Detect Offline Devices ---
             existing_devices_q = await db.execute(select(Device).where(and_(
@@ -1055,29 +1057,21 @@ async def run_discovery_scan_task(
                     continue
                 if d.ip_address and ip_in_range(d.ip_address, scan.scan_range):
                     d.status = "offline"
+                    d.scan_status = DeviceScanStatus.OFFLINE.value
                     await db.flush()
                     offline_count += 1
 
-                    # Record history
                     db.add(DeviceScanHistory(
-                        organization_id=organization_id,
-                        scan_id=scan_id,
-                        device_id=d.id,
-                        status="offline",
-                        response_time=None
+                        organization_id=organization_id, scan_id=scan_id, device_id=d.id,
+                        status="offline", response_time=None,
                     ))
                     db.add(DeviceStatusHistory(
-                        organization_id=organization_id,
-                        device_id=d.id,
-                        status="offline",
-                        response_time=None,
-                        hostname=d.name,
-                        vendor=d.vendor,
-                        operating_system=d.operating_system
+                        organization_id=organization_id, device_id=d.id, status="offline",
+                        response_time=None, hostname=d.name, vendor=d.vendor,
+                        operating_system=d.operating_system,
                     ))
 
-            # Complete scan record
-            scan.status = "completed"
+            scan.status = ScanStatus.SCANNING.value if full_scan_candidates else ScanStatus.COMPLETED.value
             scan.completed_at = datetime.utcnow()
             scan.total_devices = online_count + offline_count
             scan.online_devices = online_count
@@ -1091,23 +1085,16 @@ async def run_discovery_scan_task(
                 scan.error_message = error_msg
 
             await write_audit_log(
-                db,
-                organization_id=organization_id,
-                actor_type="system",
-                action="scan.complete",
-                resource_type="network_scans",
-                resource_id=scan.id,
+                db, organization_id=organization_id, actor_type="system", action="scan.complete",
+                resource_type="network_scans", resource_id=scan.id,
                 after_state={
-                    "total_devices": scan.total_devices,
-                    "online": online_count,
-                    "offline": offline_count,
-                    "new_devices": new_count,
-                    "updated_devices": updated_count,
-                    "failed_devices": failed_count,
-                    "auth_failures": auth_fail_count
+                    "total_devices": scan.total_devices, "online": online_count, "offline": offline_count,
+                    "new_devices": new_count, "updated_devices": updated_count,
+                    "failed_devices": failed_count, "auth_failures": auth_fail_count,
                 }
             )
             await db.commit()
+            return full_scan_candidates
 
         except Exception as e:
             await db.rollback()
@@ -1115,816 +1102,614 @@ async def run_discovery_scan_task(
                 scan_q = await fail_db.execute(select(NetworkScan).where(NetworkScan.id == scan_id))
                 scan_instance = scan_q.scalar_one_or_none()
                 if scan_instance:
-                    scan_instance.status = "failed"
+                    scan_instance.status = ScanStatus.FAILED.value
                     scan_instance.completed_at = datetime.utcnow()
                     scan_instance.error_message = str(e)
                     if scan_instance.started_at:
                         scan_instance.scan_duration = round((scan_instance.completed_at - scan_instance.started_at).total_seconds(), 2)
                     await fail_db.commit()
+            return []
 
 
-import os
-import tempfile
-import json
-import hashlib
-from datetime import datetime, timedelta
+async def finalize_scan_if_complete(db: AsyncSession, scan_id: uuid.UUID) -> None:
+    """Called after each device's Full-mode inventory collection finishes.
+    Flips the scan to a terminal status once every device it touched has
+    reached a terminal scan_status (completed/partial/failed/
+    credentials_required/offline)."""
+    scan_q = await db.execute(select(NetworkScan).where(NetworkScan.id == scan_id))
+    scan = scan_q.scalar_one_or_none()
+    if not scan or scan.status != ScanStatus.SCANNING.value:
+        return
 
-def parse_ssh_telemetry(raw_stdout: str, device_ip: str) -> dict:
-    sections = {}
-    current_section = "os"
-    current_lines = []
-    
-    for line in raw_stdout.splitlines():
-        if line.strip() == "===CPU===":
-            sections[current_section] = current_lines
-            current_section = "cpu"
-            current_lines = []
-        elif line.strip() == "===MEM===":
-            sections[current_section] = current_lines
-            current_section = "mem"
-            current_lines = []
-        elif line.strip() == "===DISK===":
-            sections[current_section] = current_lines
-            current_section = "disk"
-            current_lines = []
-        elif line.strip() == "===NET===":
-            sections[current_section] = current_lines
-            current_section = "net"
-            current_lines = []
-        elif line.strip() == "===SW===":
-            sections[current_section] = current_lines
-            current_section = "sw"
-            current_lines = []
-        elif line.strip() == "===SRV===":
-            sections[current_section] = current_lines
-            current_section = "srv"
-            current_lines = []
-        else:
-            current_lines.append(line)
-            
-    sections[current_section] = current_lines
+    device_ids_q = await db.execute(
+        select(DeviceScanHistory.device_id).where(DeviceScanHistory.scan_id == scan_id).distinct()
+    )
+    device_ids = [row[0] for row in device_ids_q.all()]
+    if not device_ids:
+        return
 
-    # 1. OS parsing
-    os_data = "\n".join(sections.get("os", []))
-    os_name = "Linux"
-    os_version = ""
-    os_edition = ""
-    os_build = ""
-    
-    pretty_name_match = re.search(r'PRETTY_NAME="([^"]+)"', os_data)
-    if pretty_name_match:
-        os_name = pretty_name_match.group(1).split()[0]
-        os_edition = pretty_name_match.group(1)
-        version_id_match = re.search(r'VERSION_ID="([^"]+)"', os_data)
-        if version_id_match:
-            os_version = version_id_match.group(1)
+    devices_q = await db.execute(select(Device).where(Device.id.in_(device_ids)))
+    devices = list(devices_q.scalars().all())
+
+    terminal = {
+        DeviceScanStatus.COMPLETED.value, DeviceScanStatus.PARTIAL.value,
+        DeviceScanStatus.FAILED.value, DeviceScanStatus.CREDENTIALS_REQUIRED.value,
+        DeviceScanStatus.OFFLINE.value, DeviceScanStatus.DISCOVERED.value,
+    }
+    if any(d.scan_status not in terminal for d in devices):
+        return
+
+    statuses = {d.scan_status for d in devices}
+    if statuses <= {DeviceScanStatus.COMPLETED.value, DeviceScanStatus.OFFLINE.value, DeviceScanStatus.DISCOVERED.value}:
+        scan.status = ScanStatus.COMPLETED.value
+    elif statuses <= {DeviceScanStatus.CREDENTIALS_REQUIRED.value, DeviceScanStatus.FAILED.value}:
+        scan.status = ScanStatus.CREDENTIALS_REQUIRED.value if DeviceScanStatus.CREDENTIALS_REQUIRED.value in statuses else ScanStatus.FAILED.value
     else:
-        name_match = re.search(r'^NAME="([^"]+)"', os_data, re.M)
-        if name_match:
-            os_name = name_match.group(1)
-            
-    # 2. CPU parsing
-    cpu_lines = sections.get("cpu", [])
-    processor_name = "Generic CPU"
-    architecture = "x86_64"
-    cores = 1
-    logical_processors = 1
-    current_speed_mhz = 2000
-    
-    for line in cpu_lines:
+        scan.status = ScanStatus.PARTIAL.value
+    await db.commit()
+
+
+# ── Real collectors (section 3-5) — every command below is read-only. ──────
+
+_LINUX_INVENTORY_SCRIPT = (
+    "echo '===OS==='; cat /etc/os-release 2>/dev/null; "
+    "echo '===DMI==='; cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name "
+    "/sys/class/dmi/id/product_serial /sys/class/dmi/id/product_uuid /sys/class/dmi/id/board_name "
+    "/sys/class/dmi/id/bios_version 2>/dev/null; "
+    "echo '===CPU==='; lscpu 2>/dev/null; "
+    "echo '===MEM==='; free -b 2>/dev/null; dmidecode -t memory 2>/dev/null | grep -E 'Size:|Speed:|Manufacturer:|Locator:'; "
+    "echo '===DISK==='; lsblk -b -P -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,MODEL,SERIAL,TRAN 2>/dev/null; "
+    "echo '===PART==='; df -B1 --output=source,size,used,avail,fstype,target 2>/dev/null; "
+    "echo '===NET==='; ip -o addr show 2>/dev/null; cat /etc/resolv.conf 2>/dev/null | grep nameserver; "
+    "ip route show default 2>/dev/null; "
+    "echo '===SW==='; (dpkg-query -W -f='${Package}\\t${Version}\\t${Maintainer}\\n' 2>/dev/null || "
+    "rpm -qa --queryformat '%{NAME}\\t%{VERSION}\\t%{VENDOR}\\n' 2>/dev/null || "
+    "pacman -Q 2>/dev/null | awk '{print $1\"\\t\"$2\"\\tArch Linux\"}'); "
+    "echo '===SRV==='; systemctl list-units --type=service --no-legend --plain 2>/dev/null; "
+    # args last (variable-width, may contain spaces) so the fixed columns
+    # before it can be split unambiguously.
+    "echo '===PROC==='; ps -eo pid,comm,user,%cpu,rss,args --no-headers 2>/dev/null; "
+    "echo '===SEC==='; "
+    "echo \"selinux:$(getenforce 2>/dev/null)\"; "
+    "echo \"apparmor:$(aa-status --enabled 2>/dev/null && echo enabled || echo disabled)\"; "
+    "echo \"ufw:$(ufw status 2>/dev/null | head -1)\"; "
+    "sshd -T 2>/dev/null | grep -iE 'permitrootlogin|passwordauthentication'; "
+    "echo '===UPTIME==='; uptime -s 2>/dev/null; who 2>/dev/null"
+)
+
+
+async def collect_linux_inventory(target: SshTarget) -> str | None:
+    stdout, _stderr, rc = await ssh_client.run_command(target, _LINUX_INVENTORY_SCRIPT)
+    return stdout if rc == 0 and stdout.strip() else None
+
+
+def parse_linux_inventory(raw_stdout: str, device_ip: str) -> dict:
+    """Real parsing only — every hardware field a real command didn't
+    return stays None (section 2/15's 'never guess, mark unavailable')."""
+    sections: dict[str, list[str]] = {}
+    current = "os"
+    lines: list[str] = []
+    tag_map = {
+        "===DMI===": "dmi", "===CPU===": "cpu", "===MEM===": "mem", "===DISK===": "disk",
+        "===PART===": "part", "===NET===": "net", "===SW===": "sw", "===SRV===": "srv",
+        "===PROC===": "proc", "===SEC===": "sec", "===UPTIME===": "uptime",
+    }
+    for line in raw_stdout.splitlines():
+        stripped = line.strip()
+        if stripped in tag_map:
+            sections[current] = lines
+            current = tag_map[stripped]
+            lines = []
+        else:
+            lines.append(line)
+    sections[current] = lines
+
+    os_data = "\n".join(sections.get("os", []))
+    os_name = None
+    os_edition = None
+    os_version = None
+    pretty_match = re.search(r'PRETTY_NAME="([^"]+)"', os_data)
+    if pretty_match:
+        os_edition = pretty_match.group(1)
+        os_name = os_edition.split()[0]
+        version_match = re.search(r'VERSION_ID="([^"]+)"', os_data)
+        if version_match:
+            os_version = version_match.group(1)
+
+    dmi_lines = [l.strip() for l in sections.get("dmi", []) if l.strip()]
+    manufacturer = dmi_lines[0] if len(dmi_lines) > 0 else None
+    model = dmi_lines[1] if len(dmi_lines) > 1 else None
+    serial_number = dmi_lines[2] if len(dmi_lines) > 2 and dmi_lines[2] not in ("Not Specified", "None") else None
+    system_uuid = dmi_lines[3] if len(dmi_lines) > 3 else None
+    motherboard = dmi_lines[4] if len(dmi_lines) > 4 else None
+    bios_version = dmi_lines[5] if len(dmi_lines) > 5 else None
+
+    processor_name = None
+    architecture = None
+    cores = None
+    logical_processors = None
+    current_speed_mhz = None
+    max_speed_mhz = None
+    for line in sections.get("cpu", []):
         if "Model name:" in line:
             processor_name = line.split(":", 1)[1].strip()
         elif "Architecture:" in line:
             architecture = line.split(":", 1)[1].strip()
-        elif "CPU(s):" in line:
+        elif line.strip().startswith("CPU(s):"):
             try:
                 logical_processors = int(line.split(":", 1)[1].strip())
-            except:
+            except ValueError:
                 pass
         elif "Core(s) per socket:" in line:
             try:
                 cores = int(line.split(":", 1)[1].strip())
-            except:
+            except ValueError:
                 pass
         elif "CPU max MHz:" in line:
             try:
                 current_speed_mhz = int(float(line.split(":", 1)[1].strip()))
-            except:
+                max_speed_mhz = current_speed_mhz
+            except ValueError:
                 pass
-                
-    # 3. Memory parsing
-    mem_lines = sections.get("mem", [])
-    total_ram_bytes = 0
-    available_ram_bytes = 0
-    for line in mem_lines:
+
+    total_ram_bytes = None
+    available_ram_bytes = None
+    ram_modules: list[dict] = []
+    configured_speed_mhz = None
+    # dmidecode -t memory prints one "Memory Device" block per slot, each
+    # starting with "Size:" — grouping on "Size:" (not "Locator:") is what
+    # correctly separates blocks, since Locator/Speed/Manufacturer can appear
+    # in either order around it depending on dmidecode version.
+    current_module: dict[str, str] = {}
+
+    def _flush_module():
+        if current_module.get("Size") and current_module["Size"] != "No Module Installed":
+            ram_modules.append({
+                "slot": current_module.get("Locator"),
+                "manufacturer": current_module.get("Manufacturer"),
+                "capacity": current_module.get("Size"),
+                "speed_mhz": current_module.get("Speed"),
+            })
+
+    for line in sections.get("mem", []):
         if line.startswith("Mem:"):
             parts = line.split()
             if len(parts) >= 2:
                 try:
                     total_ram_bytes = int(parts[1])
-                except:
+                except ValueError:
                     pass
             if len(parts) >= 7:
                 try:
                     available_ram_bytes = int(parts[6])
-                except:
+                except ValueError:
                     pass
-            elif len(parts) >= 4:
-                try:
-                    available_ram_bytes = total_ram_bytes - int(parts[2])
-                except:
-                    pass
-                    
-    # 4. Storage parsing
-    disk_lines = sections.get("disk", [])
+        elif ":" in line:
+            key, _, value = line.strip().partition(":")
+            key, value = key.strip(), value.strip()
+            if key == "Size" and current_module:
+                _flush_module()
+                current_module = {}
+            current_module[key] = value
+    _flush_module()
+
+    for m in ram_modules:
+        if m.get("speed_mhz") and configured_speed_mhz is None:
+            speed_match = re.search(r"(\d+)", m["speed_mhz"])
+            if speed_match:
+                configured_speed_mhz = int(speed_match.group(1))
+
+    disks: dict[str, dict] = {}
+    for line in sections.get("disk", []):
+        fields = dict(re.findall(r'(\w+)="([^"]*)"', line))
+        if fields.get("TYPE") != "disk" or not fields.get("NAME"):
+            continue
+        disks[fields["NAME"]] = {
+            "disk_model": fields.get("MODEL") or None,
+            "serial_number": fields.get("SERIAL") or None,
+            "capacity_bytes": int(fields["SIZE"]) if fields.get("SIZE", "").isdigit() else None,
+            "interface_type": fields.get("TRAN") or None,
+            "media_type": None,
+            "partitions": [],
+        }
+
+    partitions = []
+    for line in sections.get("part", []):
+        parts = line.split()
+        if len(parts) >= 6 and parts[0].startswith("/dev/"):
+            try:
+                partitions.append({
+                    "device_node": parts[0], "capacity_bytes": int(parts[1]),
+                    "used_bytes": int(parts[2]), "free_space_bytes": int(parts[3]),
+                    "filesystem_type": parts[4], "mount_point": parts[5],
+                })
+            except (ValueError, IndexError):
+                pass
+
     storage_drives = []
-    for line in disk_lines:
-        if line.startswith("/dev/"):
-            parts = line.split()
-            if len(parts) >= 6:
-                try:
-                    dev_name = parts[0]
-                    capacity = int(parts[1])
-                    used = int(parts[2])
-                    avail = int(parts[3])
-                    mount = parts[5]
-                    
-                    storage_drives.append({
-                        "disk_model": f"Virtual Disk ({dev_name})",
-                        "serial_number": f"DISK-SN-{hashlib.md5(dev_name.encode()).hexdigest()[:8].upper()}",
-                        "capacity_bytes": capacity,
-                        "free_space_bytes": avail,
-                        "partitions": [{"name": mount, "size_bytes": capacity}]
-                    })
-                except:
-                    pass
-    if not storage_drives:
-        storage_drives = [{
-            "disk_model": "Generic System Disk",
-            "serial_number": "DISK-SN-UNKNOWN",
-            "capacity_bytes": 1000204886016,
-            "free_space_bytes": 450102500000,
-            "partitions": [{"name": "/", "size_bytes": 1000204886016}]
-        }]
-        
-    # 5. Network Interfaces parsing
-    net_lines = sections.get("net", [])
+    if disks:
+        for name, d in disks.items():
+            d["partitions"] = [{"name": p["mount_point"], "size_bytes": p["capacity_bytes"]}
+                                for p in partitions if p["device_node"].startswith(f"/dev/{name}")]
+            storage_drives.append(d)
+    elif partitions:
+        # No lsblk disk-level data (unprivileged) — fall back to df-derived partitions only.
+        storage_drives.append({
+            "disk_model": None, "serial_number": None,
+            "capacity_bytes": sum(p["capacity_bytes"] for p in partitions),
+            "interface_type": None, "media_type": None,
+            "partitions": [{"name": p["mount_point"], "size_bytes": p["capacity_bytes"]} for p in partitions],
+        })
+
     interfaces = []
-    for line in net_lines:
+    gateway = None
+    dns_servers = [l.split()[1] for l in sections.get("net", []) if l.strip().startswith("nameserver")]
+    for line in sections.get("net", []):
+        if line.strip().startswith("default"):
+            gw_match = re.search(r"default via (\S+)", line)
+            if gw_match:
+                gateway = gw_match.group(1)
+    for line in sections.get("net", []):
         parts = line.split()
-        if "inet" in parts:
-            try:
-                ifname = parts[1]
-                ip_idx = parts.index("inet") + 1
-                ip_cidr = parts[ip_idx]
-                ip_addr = ip_cidr.split("/")[0]
-                if ip_addr.startswith("127.") or ip_addr == "::1" or ifname == "lo":
-                    continue
-                
-                interfaces.append({
-                    "interface_name": ifname,
-                    "mac_address": "00:1A:2B:3C:4D:EE",
-                    "ip_addresses": [ip_addr],
-                    "dns_servers": ["8.8.8.8"],
-                    "gateway": "192.168.1.1",
-                    "dhcp_enabled": False,
-                    "status": "up"
-                })
-            except:
-                pass
-    if not interfaces:
-        interfaces = [{
-            "interface_name": "eth0",
-            "mac_address": "00:1A:2B:3C:4D:EE",
-            "ip_addresses": [device_ip] if device_ip else [],
-            "dns_servers": ["8.8.8.8"],
-            "gateway": "192.168.1.1",
-            "dhcp_enabled": False,
-            "status": "up"
-        }]
-        
-    # 6. Software parsing
-    sw_lines = sections.get("sw", [])
-    software_list = []
-    for line in sw_lines:
-        if "\t" in line:
-            parts = line.split("\t")
-            if len(parts) >= 2:
-                software_list.append({
-                    "name": parts[0].strip(),
-                    "version": parts[1].strip(),
-                    "publisher": parts[2].strip() if len(parts) >= 3 else "Unknown",
-                    "install_date": datetime.utcnow()
-                })
-                
-    # 7. Services parsing
-    srv_lines = sections.get("srv", [])
-    services_list = []
-    for line in srv_lines:
-        parts = line.split()
-        if len(parts) >= 1:
-            srv_name = parts[0].replace(".service", "")
-            services_list.append({
-                "name": srv_name,
-                "display_name": " ".join(parts[1:]) if len(parts) > 1 else srv_name,
-                "status": "running",
-                "start_type": "enabled"
-            })
-            
-    h_suffix = hashlib.md5(device_ip.encode()).hexdigest()[:8].upper()
-    return {
-        "inv": {
-            "computer_name": os_name.lower() + "-" + device_ip.replace(".", "-") if device_ip else "linux-host",
-            "manufacturer": "Supermicro",
-            "model": "SYS-6019U-TN4RDT",
-            "serial_number": f"SM-SN-{h_suffix}",
-            "bios_version": "AMI v3.2",
-            "motherboard": "X11DPU",
-            "domain": "corp.internal",
-            "workgroup": None,
-            "os_name": os_name,
-            "os_edition": os_edition or os_name,
-            "os_build": os_build or "5.15.0-72-generic",
-            "os_version": os_version or "22.04",
-            "os_install_date": datetime.utcnow() - timedelta(days=180),
-            "os_last_boot": datetime.utcnow() - timedelta(days=45),
-            "os_timezone": "UTC",
-            "antivirus": "ClamAV",
-            "bitlocker_status": "LUKS Encrypted",
-            "firewall_status": "UFW Active",
-            "uptime": "45 days, 3 hours",
-            "raw_details": {"kernel": "5.15.0-72-generic", "shell": "/bin/bash", "virtualization": "KVM"}
-        },
-        "processors": [{
-            "processor_name": processor_name,
-            "architecture": architecture,
-            "cores": cores,
-            "logical_processors": logical_processors,
-            "current_speed_mhz": current_speed_mhz
-        }],
-        "memory": [{
-            "total_ram_bytes": total_ram_bytes or 137438953472,
-            "available_ram_bytes": available_ram_bytes or 68719476736,
-            "memory_slots": 8,
-            "ram_modules": [{"slot": "DIMM_A1", "size": "64GB", "type": "DDR4"}, {"slot": "DIMM_B1", "size": "64GB", "type": "DDR4"}]
-        }],
-        "storage": storage_drives,
-        "interfaces": interfaces,
-        "software": software_list or [
-            {"name": "openssh-server", "version": "1:8.9p1-3", "publisher": "Ubuntu Developers", "install_date": datetime.utcnow() - timedelta(days=180)},
-            {"name": "docker-ce", "version": "20.10.12", "publisher": "Docker Inc.", "install_date": datetime.utcnow() - timedelta(days=150)},
-            {"name": "nginx", "version": "1.18.0", "publisher": "Nginx Inc.", "install_date": datetime.utcnow() - timedelta(days=90)}
-        ],
-        "services": services_list or [
-            {"name": "ssh", "display_name": "OpenBSD Secure Shell server", "status": "running", "start_type": "enabled"},
-            {"name": "docker", "display_name": "Docker Application Container Engine", "status": "running", "start_type": "enabled"},
-            {"name": "ufw", "display_name": "Uncomplicated Firewall", "status": "running", "start_type": "enabled"}
-        ]
-    }
-
-
-def parse_winrm_telemetry(raw_stdout: str, device_ip: str) -> dict:
-    sections = {}
-    current_lines = []
-    current_key = None
-    
-    for line in raw_stdout.splitlines():
-        if line.startswith("===OS==="):
-            sections["os"] = json.loads(line.replace("===OS===", "").strip())
-        elif line.startswith("===CPU==="):
-            sections["cpu"] = json.loads(line.replace("===CPU===", "").strip())
-        elif line.startswith("===DISK==="):
-            sections["disk"] = json.loads(line.replace("===DISK===", "").strip())
-        elif line.startswith("===SW==="):
-            sections["sw"] = json.loads(line.replace("===SW===", "").strip())
-        elif line.startswith("===SRV==="):
-            sections["srv"] = json.loads(line.replace("===SRV===", "").strip())
-            
-    os_info = sections.get("os", {})
-    os_name = os_info.get("Caption", "Windows Server")
-    os_version = os_info.get("Version", "10.0")
-    
-    cpu_info = sections.get("cpu", {})
-    if isinstance(cpu_info, list):
-        cpu_info = cpu_info[0] if cpu_info else {}
-    processor_name = cpu_info.get("Name", "Generic Intel CPU")
-    cores = cpu_info.get("NumberOfCores", 4)
-    logical = cpu_info.get("NumberOfLogicalProcessors", 8)
-    
-    disk_info = sections.get("disk", [])
-    if not isinstance(disk_info, list):
-        disk_info = [disk_info] if disk_info else []
-    storage = []
-    for d in disk_info:
-        dev_id = d.get("DeviceID", "C:")
-        size = d.get("Size", 100 * 1024**3)
-        free = d.get("FreeSpace", 50 * 1024**3)
-        storage.append({
-            "disk_model": f"Logical Disk ({dev_id})",
-            "serial_number": f"WIN-DISK-SN-{dev_id}",
-            "capacity_bytes": size,
-            "free_space_bytes": free,
-            "partitions": [{"name": dev_id, "size_bytes": size}]
-        })
-        
-    sw_info = sections.get("sw", [])
-    if not isinstance(sw_info, list):
-        sw_info = [sw_info] if sw_info else []
-    software = []
-    for s in sw_info:
-        name = s.get("DisplayName")
-        if name:
-            software.append({
-                "name": name,
-                "version": s.get("DisplayVersion", "1.0"),
-                "publisher": s.get("Publisher", "Unknown"),
-                "install_date": datetime.utcnow()
-            })
-            
-    srv_info = sections.get("srv", [])
-    if not isinstance(srv_info, list):
-        srv_info = [srv_info] if srv_info else []
-    services = []
-    for sv in srv_info:
-        services.append({
-            "name": sv.get("Name", ""),
-            "display_name": sv.get("DisplayName", ""),
-            "status": "running" if sv.get("Status") in [4, "Running"] else "stopped",
-            "start_type": "automatic"
-        })
-        
-    h_suffix = hashlib.md5(device_ip.encode()).hexdigest()[:8].upper()
-    return {
-        "inv": {
-            "computer_name": "win-" + device_ip.replace(".", "-") if device_ip else "windows-host",
-            "manufacturer": "Dell Inc.",
-            "model": "PowerEdge R750",
-            "serial_number": f"DELL-SN-{h_suffix}",
-            "bios_version": "Dell Inc. 1.8.2",
-            "motherboard": "Dell 0M5Y4D",
-            "domain": "corp.internal",
-            "workgroup": None,
-            "os_name": os_name,
-            "os_edition": "Standard",
-            "os_build": os_version.split(".")[-1] if "." in os_version else "20348",
-            "os_version": os_version,
-            "os_install_date": datetime.utcnow() - timedelta(days=365),
-            "os_last_boot": datetime.utcnow() - timedelta(days=12),
-            "os_timezone": "UTC",
-            "antivirus": "Windows Defender",
-            "bitlocker_status": "Enabled",
-            "firewall_status": "Enabled",
-            "uptime": "12 days, 3 hours",
-            "raw_details": {"powershell_version": "7.2.5", "winrm_port": 5986}
-        },
-        "processors": [{
-            "processor_name": processor_name,
-            "architecture": "x64",
-            "cores": cores,
-            "logical_processors": logical,
-            "current_speed_mhz": 2000
-        }],
-        "memory": [{
-            "total_ram_bytes": 68719476736,
-            "available_ram_bytes": 34359738368,
-            "memory_slots": 4,
-            "ram_modules": [{"slot": "DIMM_A1", "size": "32GB", "type": "DDR4"}]
-        }],
-        "storage": storage,
-        "interfaces": [{
-            "interface_name": "Ethernet1",
-            "mac_address": "00:15:5D:AA:BB:CC",
-            "ip_addresses": [device_ip] if device_ip else [],
-            "dns_servers": ["8.8.8.8"],
-            "gateway": "192.168.1.1",
-            "dhcp_enabled": True,
-            "status": "up"
-        }],
-        "software": software or [
-            {"name": "Google Chrome", "version": "114.0.5735.199", "publisher": "Google LLC", "install_date": datetime.utcnow() - timedelta(days=120)}
-        ],
-        "services": services or [
-            {"name": "WinRM", "display_name": "Windows Remote Management (WS-Management)", "status": "running", "start_type": "automatic"}
-        ]
-    }
-
-
-def parse_snmp_telemetry(telemetry_data: dict, device_ip: str) -> dict:
-    sys_descr = telemetry_data.get("sysDescr", "Cisco Catalyst")
-    sys_name = telemetry_data.get("sysName", "switch-host")
-    h_suffix = hashlib.md5(device_ip.encode()).hexdigest()[:8].upper()
-    return {
-        "inv": {
-            "computer_name": sys_name.strip(),
-            "manufacturer": "Cisco",
-            "model": "Catalyst 9300",
-            "serial_number": f"CS-SN-{h_suffix}",
-            "bios_version": "ROMMON 17.6",
-            "motherboard": "Cisco Catalyst Board",
-            "domain": "corp.internal",
-            "workgroup": None,
-            "os_name": "IOS-XE",
-            "os_edition": "IP Services",
-            "os_build": "17.6.3",
-            "os_version": "17.6.3",
-            "os_install_date": datetime.utcnow() - timedelta(days=500),
-            "os_last_boot": datetime.utcnow() - timedelta(days=142),
-            "os_timezone": "UTC",
-            "antivirus": None,
-            "bitlocker_status": None,
-            "firewall_status": "Enabled",
-            "uptime": "142 days, 9 hours",
-            "raw_details": {"snmp_version": "v2c", "sysDescr": sys_descr}
-        },
-        "processors": [{
-            "processor_name": "ARM Quad-Core Embedded Processor",
-            "architecture": "ARM",
-            "cores": 4,
-            "logical_processors": 4,
-            "current_speed_mhz": 1200
-        }],
-        "memory": [{
-            "total_ram_bytes": 8589934592,
-            "available_ram_bytes": 4294967296,
-            "memory_slots": 1,
-            "ram_modules": [{"slot": "Onboard", "size": "8GB", "type": "LPDDR4"}]
-        }],
-        "storage": [{
-            "disk_model": "Flash Boot Disk",
-            "serial_number": "FLASH-SN-DYNAMIC",
-            "capacity_bytes": 17179869184,
-            "free_space_bytes": 8589934592,
-            "partitions": [{"name": "flash:", "size_bytes": 17179869184}]
-        }],
-        "interfaces": [{
-            "interface_name": "GigabitEthernet1/0/1",
-            "mac_address": "00:1A:2B:3C:4D:01",
-            "ip_addresses": [device_ip] if device_ip else [],
-            "dns_servers": ["8.8.8.8"],
-            "gateway": "192.168.1.1",
-            "dhcp_enabled": False,
-            "status": "up"
-        }],
-        "software": [
-            {"name": "IOS-XE Software Image", "version": "17.6.3", "publisher": "Cisco Systems", "install_date": datetime.utcnow() - timedelta(days=500)}
-        ],
-        "services": [
-            {"name": "snmpd", "display_name": "SNMP Agent Service", "status": "running", "start_type": "enabled"},
-            {"name": "sshd", "display_name": "SSH Daemon", "status": "running", "start_type": "enabled"}
-        ]
-    }
-
-
-async def attempt_ssh_inventory(ip: str, port: int, credential: Any, secret: str) -> dict | None:
-    """Attempts actual connection via SSH to collect telemetry, raises or returns None on failure."""
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port),
-            timeout=1.0
-        )
-        writer.close()
-        await writer.wait_closed()
-    except Exception as e:
-        print(f"SSH port {port} on {ip} is closed: {e}")
-        return None
-
-    username = credential.encrypted_metadata.get("username", "")
-    temp_key_path = None
-    try:
-        ssh_cmd_str = (
-            "cat /etc/os-release && "
-            "echo '===CPU===' && lscpu && "
-            "echo '===MEM===' && free -b && "
-            "echo '===DISK===' && df -B1 && "
-            "echo '===NET===' && ip -o addr show && "
-            "echo '===SW===' && (dpkg-query -W -f='${Package}\\t${Version}\\t${Maintainer}\\n' 2>/dev/null || rpm -qa --queryformat '%{NAME}\\t%{VERSION}\\t%{VENDOR}\\n' 2>/dev/null) && "
-            "echo '===SRV===' && (systemctl list-units --type=service --state=running --no-legend 2>/dev/null || initctl list 2>/dev/null)"
-        )
-
-        if credential.credential_type == "ssh_key":
-            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_key:
-                temp_key.write(secret)
-                temp_key_path = temp_key.name
-            os.chmod(temp_key_path, 0o600)
-            
-            cmd = [
-                "ssh", "-i", temp_key_path,
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=2",
-                "-p", str(port),
-                f"{username}@{ip}",
-                ssh_cmd_str
-            ]
+        if len(parts) < 4 or "inet" not in parts:
+            continue
+        ifname = parts[1].rstrip(":")
+        if ifname == "lo":
+            continue
+        try:
+            ip_idx = parts.index("inet") + 1
+            ip_addr = parts[ip_idx].split("/")[0]
+        except (ValueError, IndexError):
+            continue
+        existing = next((i for i in interfaces if i["interface_name"] == ifname), None)
+        if existing:
+            existing["ip_addresses"].append(ip_addr)
         else:
-            cmd = [
-                "ssh", "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=2",
-                "-p", str(port),
-                f"{username}@{ip}",
-                ssh_cmd_str
-            ]
+            interfaces.append({
+                "interface_name": ifname, "mac_address": None, "ip_addresses": [ip_addr],
+                "dns_servers": dns_servers, "gateway": gateway, "dhcp_enabled": None, "status": "up",
+            })
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5.0)
-        if process.returncode == 0:
-            return {"raw_stdout": stdout.decode()}
-    except Exception as e:
-        print(f"SSH command execution failed on {ip}: {e}")
-    finally:
-        if temp_key_path and os.path.exists(temp_key_path):
+    software = []
+    for line in sections.get("sw", []):
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0].strip():
+            software.append({
+                "name": parts[0].strip(), "version": parts[1].strip(),
+                "publisher": parts[2].strip() if len(parts) >= 3 else None,
+                "install_date": None,
+            })
+
+    services = []
+    for line in sections.get("srv", []):
+        parts = line.split()
+        if len(parts) >= 4 and parts[0].endswith(".service"):
+            services.append({
+                "name": parts[0].replace(".service", ""),
+                "display_name": " ".join(parts[4:]) if len(parts) > 4 else parts[0],
+                "status": parts[3] if len(parts) > 3 else None,
+                "start_type": parts[1] if len(parts) > 1 else None,
+            })
+
+    # ps -eo pid,comm,user,%cpu,rss,args — args last (see script comment)
+    # since it's variable-width and may itself contain spaces.
+    processes = []
+    for line in sections.get("proc", []):
+        parts = line.split(None, 5)
+        if len(parts) >= 5 and parts[0].isdigit():
             try:
-                os.remove(temp_key_path)
-            except Exception:
+                processes.append({
+                    "pid": int(parts[0]), "name": parts[1], "user_name": parts[2],
+                    "cpu_percent": float(parts[3]) if _is_float(parts[3]) else None,
+                    "memory_bytes": int(parts[4]) * 1024 if parts[4].isdigit() else None,
+                    "command_line": parts[5] if len(parts) > 5 else None, "status": None,
+                })
+            except (ValueError, IndexError):
                 pass
-    return None
 
+    sec = {}
+    for line in sections.get("sec", []):
+        if line.startswith("selinux:"):
+            sec["selinux_status"] = line.split(":", 1)[1].strip().lower() or None
+        elif line.startswith("apparmor:"):
+            sec["apparmor_status"] = line.split(":", 1)[1].strip().lower() or None
+        elif line.startswith("ufw:"):
+            ufw_line = line.split(":", 1)[1].strip().lower()
+            sec["ufw_active"] = "active" in ufw_line if ufw_line else None
+        elif "permitrootlogin" in line.lower():
+            sec["ssh_root_login_enabled"] = "yes" in line.lower()
+        elif "passwordauthentication" in line.lower():
+            sec["ssh_password_auth_enabled"] = "yes" in line.lower()
 
-async def attempt_winrm_inventory(ip: str, port: int, credential: Any, secret: str) -> dict | None:
-    """Attempts actual connection via pypsrp to collect telemetry, raises or returns None on failure."""
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port),
-            timeout=1.0
-        )
-        writer.close()
-        await writer.wait_closed()
-    except Exception as e:
-        print(f"WinRM port {port} on {ip} is closed: {e}")
-        return None
-
-    username = credential.encrypted_metadata.get("username", "")
-    try:
-        from pypsrp.client import Client
-        
-        def run_winrm_commands():
-            client = Client(
-                ip,
-                username=username,
-                password=secret,
-                ssl=(port == 5986),
-                connection_timeout=2
-            )
-            ps_script = (
-                "$os = Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture, LastBootUpTime | ConvertTo-Json -Compress; "
-                "$cpu = Get-CimInstance Win32_Processor | Select-Object Name, Architecture, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed | ConvertTo-Json -Compress; "
-                "$disk = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID, Size, FreeSpace | ConvertTo-Json -Compress; "
-                "$sw = Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* | Select-Object DisplayName, DisplayVersion, Publisher | ConvertTo-Json -Compress; "
-                "$srv = Get-Service | Where-Object {$_.Status -eq 'Running'} | Select-Object Name, DisplayName, Status, StartType | ConvertTo-Json -Compress; "
-                "Write-Output \"===OS===$os\"; "
-                "Write-Output \"===CPU===$cpu\"; "
-                "Write-Output \"===DISK===$disk\"; "
-                "Write-Output \"===SW===$sw\"; "
-                "Write-Output \"===SRV===$srv\";"
-            )
-            res = client.execute_ps(ps_script)
-            return {"raw_stdout": res.stdout}
-
-        result = await asyncio.to_thread(run_winrm_commands)
-        if result:
-            return result
-    except Exception as e:
-        print(f"WinRM telemetry collection failed on {ip}: {e}")
-    return None
-
-
-async def attempt_snmp_inventory(ip: str, port: int, credential: Any, secret: str) -> dict | None:
-    """Attempts actual query via snmpwalk/snmpget, raises or returns None on failure."""
-    try:
-        cmd_descr = ["snmpget", "-v", "2c", "-c", secret, f"{ip}:{port}", "1.3.6.1.2.1.1.1.0"]
-        cmd_name = ["snmpget", "-v", "2c", "-c", secret, f"{ip}:{port}", "1.3.6.1.2.1.1.5.0"]
-        
-        proc_descr = await asyncio.create_subprocess_exec(*cmd_descr, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        proc_name = await asyncio.create_subprocess_exec(*cmd_name, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        
-        out_descr, _ = await asyncio.wait_for(proc_descr.communicate(), timeout=3.0)
-        out_name, _ = await asyncio.wait_for(proc_name.communicate(), timeout=3.0)
-        
-        descr_str = out_descr.decode() if proc_descr.returncode == 0 else ""
-        name_str = out_name.decode() if proc_name.returncode == 0 else ""
-        
-        if descr_str or name_str:
-            return {
-                "sysDescr": descr_str,
-                "sysName": name_str
-            }
-    except Exception as e:
-        print(f"SNMP telemetry collection failed on {ip}: {e}")
-    return None
-
-
-def get_static_fallback_data(dev_type: str, device: Any, h_suffix: str) -> dict:
-    if dev_type == "windows":
-        new_inv = {
-            "computer_name": device.name,
-            "manufacturer": "Dell Inc.",
-            "model": "PowerEdge R750",
-            "serial_number": f"DELL-SN-{h_suffix}",
-            "bios_version": "Dell Inc. 1.8.2",
-            "motherboard": "Dell 0M5Y4D",
-            "domain": "corp.internal",
-            "workgroup": None,
-            "os_name": "Windows Server 2022",
-            "os_edition": "Standard",
-            "os_build": "20348",
-            "os_version": "10.0.20348",
-            "os_install_date": datetime.utcnow() - timedelta(days=365),
-            "os_last_boot": datetime.utcnow() - timedelta(days=12),
-            "os_timezone": "UTC",
-            "antivirus": "Windows Defender",
-            "bitlocker_status": "Enabled",
-            "firewall_status": "Enabled",
-            "uptime": "12 days, 3 hours",
-            "raw_details": {"powershell_version": "7.2.5", "winrm_port": 5986}
-        }
-        new_processors = [{
-            "processor_name": "Intel(R) Xeon(R) Gold 6330 CPU @ 2.00GHz",
-            "architecture": "x64",
-            "cores": 28,
-            "logical_processors": 56,
-            "current_speed_mhz": 2000
-        }]
-        new_memory = [{
-            "total_ram_bytes": 68719476736,
-            "available_ram_bytes": 34359738368,
-            "memory_slots": 4,
-            "ram_modules": [{"slot": "DIMM_A1", "size": "32GB", "type": "DDR4"}, {"slot": "DIMM_B1", "size": "32GB", "type": "DDR4"}]
-        }]
-        new_storage = [
-            {
-                "disk_model": "PERC H755 Adapter",
-                "serial_number": f"DISK-SN-{h_suffix}-0",
-                "capacity_bytes": 512110254080,
-                "free_space_bytes": 214748364800,
-                "partitions": [{"name": "C:", "size_bytes": 512110254080}]
-            }
-        ]
-        new_interfaces = [
-            {
-                "interface_name": "Ethernet1",
-                "mac_address": device.mac_address or "00:15:5D:AA:BB:CC",
-                "ip_addresses": [device.ip_address] if device.ip_address else [],
-                "dns_servers": ["8.8.8.8", "1.1.1.1"],
-                "gateway": "192.168.1.1",
-                "dhcp_enabled": True,
-                "status": "up"
-            }
-        ]
-        new_software = [
-            {"name": "Google Chrome", "version": "114.0.5735.199", "publisher": "Google LLC", "install_date": datetime.utcnow() - timedelta(days=120)},
-            {"name": "Python 3.11", "version": "3.11.4", "publisher": "Python Software Foundation", "install_date": datetime.utcnow() - timedelta(days=90)},
-            {"name": "Copilot agent", "version": "1.2.0", "publisher": "Google", "install_date": datetime.utcnow() - timedelta(days=30)}
-        ]
-        new_services = [
-            {"name": "WinRM", "display_name": "Windows Remote Management (WS-Management)", "status": "running", "start_type": "automatic"},
-            {"name": "wuauserv", "display_name": "Windows Update", "status": "stopped", "start_type": "manual"},
-            {"name": "Dhcp", "display_name": "DHCP Client", "status": "running", "start_type": "automatic"}
-        ]
-
-    elif dev_type in ["linux", "virtual_machine", "docker_host"]:
-        new_inv = {
-            "computer_name": device.name,
-            "manufacturer": "Supermicro",
-            "model": "SYS-6019U-TN4RDT",
-            "serial_number": f"SM-SN-{h_suffix}",
-            "bios_version": "AMI v3.2",
-            "motherboard": "X11DPU",
-            "domain": "corp.internal",
-            "workgroup": None,
-            "os_name": "Ubuntu",
-            "os_edition": "Ubuntu 22.04 LTS",
-            "os_build": "5.15.0-72-generic",
-            "os_version": "22.04",
-            "os_install_date": datetime.utcnow() - timedelta(days=180),
-            "os_last_boot": datetime.utcnow() - timedelta(days=45),
-            "os_timezone": "UTC",
-            "antivirus": "ClamAV",
-            "bitlocker_status": "LUKS Encrypted",
-            "firewall_status": "UFW Active",
-            "uptime": "45 days, 3 hours",
-            "raw_details": {"kernel": "5.15.0-72-generic", "shell": "/bin/bash", "virtualization": "KVM"}
-        }
-        new_processors = [{
-            "processor_name": "AMD EPYC 7542 32-Core Processor",
-            "architecture": "x86_64",
-            "cores": 32,
-            "logical_processors": 64,
-            "current_speed_mhz": 2900
-        }]
-        new_memory = [{
-            "total_ram_bytes": 137438953472,
-            "available_ram_bytes": 68719476736,
-            "memory_slots": 8,
-            "ram_modules": [{"slot": "DIMM_A1", "size": "64GB", "type": "DDR4"}, {"slot": "DIMM_B1", "size": "64GB", "type": "DDR4"}]
-        }]
-        new_storage = [
-            {
-                "disk_model": "Samsung SSD 980 PRO 1TB",
-                "serial_number": f"SAMSUNG-SN-{h_suffix}-0",
-                "capacity_bytes": 1000204886016,
-                "free_space_bytes": 450102500000,
-                "partitions": [{"name": "/dev/sda1", "size_bytes": 1000204886016}]
-            }
-        ]
-        new_interfaces = [
-            {
-                "interface_name": "eth0",
-                "mac_address": device.mac_address or "00:1A:2B:3C:4D:EE",
-                "ip_addresses": [device.ip_address] if device.ip_address else [],
-                "dns_servers": ["8.8.8.8"],
-                "gateway": "192.168.1.1",
-                "dhcp_enabled": False,
-                "status": "up"
-            }
-        ]
-        new_software = [
-            {"name": "openssh-server", "version": "1:8.9p1-3", "publisher": "Ubuntu Developers", "install_date": datetime.utcnow() - timedelta(days=180)},
-            {"name": "docker-ce", "version": "20.10.12", "publisher": "Docker Inc.", "install_date": datetime.utcnow() - timedelta(days=150)},
-            {"name": "nginx", "version": "1.18.0", "publisher": "Nginx Inc.", "install_date": datetime.utcnow() - timedelta(days=90)}
-        ]
-        new_services = [
-            {"name": "ssh", "display_name": "OpenBSD Secure Shell server", "status": "running", "start_type": "enabled"},
-            {"name": "docker", "display_name": "Docker Application Container Engine", "status": "running", "start_type": "enabled"},
-            {"name": "ufw", "display_name": "Uncomplicated Firewall", "status": "running", "start_type": "enabled"}
-        ]
-
-    else:
-        new_inv = {
-            "computer_name": device.name,
-            "manufacturer": device.vendor or "Cisco",
-            "model": "Catalyst 9300",
-            "serial_number": f"CS-SN-{h_suffix}",
-            "bios_version": "ROMMON 17.6",
-            "motherboard": "Cisco Catalyst Board",
-            "domain": "corp.internal",
-            "workgroup": None,
-            "os_name": "IOS-XE",
-            "os_edition": "IP Services",
-            "os_build": "17.6.3",
-            "os_version": "17.6.3",
-            "os_install_date": datetime.utcnow() - timedelta(days=500),
-            "os_last_boot": datetime.utcnow() - timedelta(days=142),
-            "os_timezone": "UTC",
-            "antivirus": None,
-            "bitlocker_status": None,
-            "firewall_status": "Enabled",
-            "uptime": "142 days, 9 hours",
-            "raw_details": {"snmp_version": "v2c", "sysObjectID": "1.3.6.1.4.1.9.1.2827"}
-        }
-        new_processors = [{
-            "processor_name": "ARM Quad-Core Embedded Processor",
-            "architecture": "ARM",
-            "cores": 4,
-            "logical_processors": 4,
-            "current_speed_mhz": 1200
-        }]
-        new_memory = [{
-            "total_ram_bytes": 8589934592,
-            "available_ram_bytes": 4294967296,
-            "memory_slots": 1,
-            "ram_modules": [{"slot": "Onboard", "size": "8GB", "type": "LPDDR4"}]
-        }]
-        new_storage = [
-            {
-                "disk_model": "Flash Boot Disk",
-                "serial_number": f"FLASH-SN-{h_suffix}-0",
-                "capacity_bytes": 17179869184,
-                "free_space_bytes": 8589934592,
-                "partitions": [{"name": "flash:", "size_bytes": 17179869184}]
-            }
-        ]
-        new_interfaces = [
-            {
-                "interface_name": "GigabitEthernet1/0/1",
-                "mac_address": device.mac_address or "00:1A:2B:3C:4D:01",
-                "ip_addresses": [device.ip_address] if device.ip_address else [],
-                "dns_servers": ["8.8.8.8"],
-                "gateway": "192.168.1.1",
-                "dhcp_enabled": False,
-                "status": "up"
-            }
-        ]
-        new_software = [
-            {"name": "IOS-XE Software Image", "version": "17.6.3", "publisher": "Cisco Systems", "install_date": datetime.utcnow() - timedelta(days=500)}
-        ]
-        new_services = [
-            {"name": "snmpd", "display_name": "SNMP Agent Service", "status": "running", "start_type": "enabled"},
-            {"name": "sshd", "display_name": "SSH Daemon", "status": "running", "start_type": "enabled"}
-        ]
+    uptime_lines = sections.get("uptime", [])
+    uptime = uptime_lines[0].strip() if uptime_lines else None
+    logged_in_users = ", ".join(sorted({l.split()[0] for l in uptime_lines[1:] if l.strip()})) or None
 
     return {
-        "inv": new_inv,
-        "processors": new_processors,
-        "memory": new_memory,
-        "storage": new_storage,
-        "interfaces": new_interfaces,
-        "software": new_software,
-        "services": new_services
+        "inv": {
+            "computer_name": None,  # set by caller from hostnamectl-equivalent / device.name
+            "manufacturer": manufacturer, "model": model, "serial_number": serial_number,
+            "bios_version": bios_version, "motherboard": motherboard, "domain": None, "workgroup": None,
+            "os_name": os_name, "os_edition": os_edition, "os_build": None, "os_version": os_version,
+            "os_install_date": None, "os_last_boot": None, "os_timezone": None,
+            "antivirus": None, "bitlocker_status": None, "firewall_status": None,
+            "uptime": uptime, "raw_details": {"logged_in_users": logged_in_users},
+        },
+        "system_uuid": system_uuid,
+        "processors": [{
+            "processor_name": processor_name, "architecture": architecture, "cores": cores,
+            "logical_processors": logical_processors, "current_speed_mhz": current_speed_mhz,
+            "max_speed_mhz": max_speed_mhz, "socket_designation": None,
+        }] if processor_name or cores else [],
+        "memory": [{
+            "total_ram_bytes": total_ram_bytes, "available_ram_bytes": available_ram_bytes,
+            "memory_slots": len(ram_modules) or None, "ram_modules": ram_modules or None,
+            "configured_speed_mhz": configured_speed_mhz,
+        }] if total_ram_bytes else [],
+        "storage": storage_drives,
+        "partitions": partitions,
+        "interfaces": interfaces,
+        "software": software,
+        "services": services,
+        "processes": processes,
+        "security": sec,
+    }
+
+
+def _is_float(value: str) -> bool:
+    try:
+        float(value)
+        return True
+    except ValueError:
+        return False
+
+
+_WINDOWS_INVENTORY_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+function Emit($tag, $obj) { Write-Output ("===$tag===" + ($obj | ConvertTo-Json -Compress -Depth 4)) }
+Emit SYS (Get-CimInstance Win32_ComputerSystem | Select-Object Name,Manufacturer,Model,Domain,Workgroup,PartOfDomain)
+Emit BIOS (Get-CimInstance Win32_BIOS | Select-Object SerialNumber,Version,Manufacturer,ReleaseDate)
+Emit BOARD (Get-CimInstance Win32_BaseBoard | Select-Object Product,Manufacturer,SerialNumber)
+Emit CPU (Get-CimInstance Win32_Processor | Select-Object Name,Manufacturer,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,CurrentClockSpeed,SocketDesignation)
+Emit MEM (Get-CimInstance Win32_PhysicalMemory | Select-Object DeviceLocator,Manufacturer,Capacity,Speed)
+Emit OS (Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture,InstallDate,LastBootUpTime)
+Emit DISK (Get-CimInstance Win32_DiskDrive | Select-Object DeviceID,Model,SerialNumber,Size,InterfaceType,MediaType,Status)
+Emit LOGICALDISK (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID,Size,FreeSpace,FileSystem)
+Emit NIC (Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=True" | Select-Object Description,MACAddress,IPAddress,DefaultIPGateway,DNSServerSearchOrder,DHCPEnabled)
+Emit NETADAPTER (Get-CimInstance Win32_NetworkAdapter -Filter "PhysicalAdapter=True" | Select-Object Name,Speed,NetConnectionStatus,MACAddress)
+Emit SW (Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object {$_.DisplayName} | Select-Object DisplayName,DisplayVersion,Publisher,InstallDate)
+Emit SRV (Get-CimInstance Win32_Service | Select-Object Name,DisplayName,State,StartMode)
+Emit PROC (Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine,WorkingSetSize)
+Emit DEFENDER (Get-MpComputerStatus | Select-Object AntivirusEnabled,AntivirusSignatureVersion,RealTimeProtectionEnabled,AntispywareSignatureLastUpdated)
+Emit FIREWALL (Get-NetFirewallProfile | Select-Object Name,Enabled)
+Emit BITLOCKER (Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus)
+Emit SECUREBOOT (Confirm-SecureBootUEFI)
+Emit UPDATES (Get-HotFix | Select-Object HotFixID,InstalledOn | Sort-Object InstalledOn -Descending | Select-Object -First 20)
+"""
+
+
+async def collect_windows_inventory(target: WinRmTarget) -> str | None:
+    stdout, _stderr, rc = await run_in_threadpool(run_powershell, target, _WINDOWS_INVENTORY_SCRIPT)
+    return stdout if rc == 0 and stdout.strip() else None
+
+
+def _parse_win_json_block(raw_stdout: str, tag: str) -> Any:
+    marker = f"==={tag}==="
+    for line in raw_stdout.splitlines():
+        if line.startswith(marker):
+            payload = line[len(marker):].strip()
+            if not payload:
+                return None
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+def _as_list(value: Any) -> list:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def parse_windows_inventory(raw_stdout: str, device_ip: str) -> dict:
+    sys_info = _parse_win_json_block(raw_stdout, "SYS") or {}
+    bios_info = _parse_win_json_block(raw_stdout, "BIOS") or {}
+    board_info = _parse_win_json_block(raw_stdout, "BOARD") or {}
+    os_info = _parse_win_json_block(raw_stdout, "OS") or {}
+    cpu_list = _as_list(_parse_win_json_block(raw_stdout, "CPU"))
+    mem_list = _as_list(_parse_win_json_block(raw_stdout, "MEM"))
+    disk_list = _as_list(_parse_win_json_block(raw_stdout, "DISK"))
+    logical_disk_list = _as_list(_parse_win_json_block(raw_stdout, "LOGICALDISK"))
+    nic_list = _as_list(_parse_win_json_block(raw_stdout, "NIC"))
+    net_adapter_list = _as_list(_parse_win_json_block(raw_stdout, "NETADAPTER"))
+    sw_list = _as_list(_parse_win_json_block(raw_stdout, "SW"))
+    srv_list = _as_list(_parse_win_json_block(raw_stdout, "SRV"))
+    proc_list = _as_list(_parse_win_json_block(raw_stdout, "PROC"))
+    defender = _parse_win_json_block(raw_stdout, "DEFENDER") or {}
+    firewall_list = _as_list(_parse_win_json_block(raw_stdout, "FIREWALL"))
+    bitlocker_list = _as_list(_parse_win_json_block(raw_stdout, "BITLOCKER"))
+    secure_boot = _parse_win_json_block(raw_stdout, "SECUREBOOT")
+    updates_list = _as_list(_parse_win_json_block(raw_stdout, "UPDATES"))
+
+    processors = []
+    for c in cpu_list:
+        if not c:
+            continue
+        processors.append({
+            "processor_name": c.get("Name"), "architecture": None,
+            "cores": c.get("NumberOfCores"), "logical_processors": c.get("NumberOfLogicalProcessors"),
+            "current_speed_mhz": c.get("CurrentClockSpeed"), "max_speed_mhz": c.get("MaxClockSpeed"),
+            "socket_designation": c.get("SocketDesignation"),
+        })
+
+    ram_modules = [{
+        "slot": m.get("DeviceLocator"), "manufacturer": m.get("Manufacturer"),
+        "capacity": m.get("Capacity"), "speed_mhz": m.get("Speed"),
+    } for m in mem_list if m]
+    total_ram_bytes = sum(int(m["Capacity"]) for m in mem_list if m and m.get("Capacity")) or None
+    speeds = [m["Speed"] for m in mem_list if m and m.get("Speed")]
+
+    storage = []
+    for d in disk_list:
+        if not d:
+            continue
+        matching_logical = next((ld for ld in logical_disk_list if ld), None)
+        storage.append({
+            "disk_model": d.get("Model"), "serial_number": d.get("SerialNumber"),
+            "capacity_bytes": d.get("Size"),
+            "free_space_bytes": matching_logical.get("FreeSpace") if matching_logical else None,
+            "interface_type": d.get("InterfaceType"), "media_type": d.get("MediaType"),
+            "health_status": d.get("Status"),
+            "partitions": [],
+        })
+    partitions = [{
+        "device_node": ld.get("DeviceID"), "mount_point": ld.get("DeviceID"),
+        "filesystem_type": ld.get("FileSystem"), "capacity_bytes": ld.get("Size"),
+        "free_space_bytes": ld.get("FreeSpace"),
+        "used_bytes": (ld["Size"] - ld["FreeSpace"]) if ld.get("Size") and ld.get("FreeSpace") else None,
+    } for ld in logical_disk_list if ld]
+    if storage and partitions:
+        storage[0]["partitions"] = [{"name": p["mount_point"], "size_bytes": p["capacity_bytes"]} for p in partitions]
+
+    interfaces = []
+    for nic in nic_list:
+        if not nic:
+            continue
+        matching_adapter = next((a for a in net_adapter_list if a and a.get("MACAddress") == nic.get("MACAddress")), None)
+        interfaces.append({
+            "interface_name": nic.get("Description"), "mac_address": nic.get("MACAddress"),
+            "ip_addresses": _as_list(nic.get("IPAddress")), "dns_servers": _as_list(nic.get("DNSServerSearchOrder")),
+            "gateway": (_as_list(nic.get("DefaultIPGateway")) or [None])[0], "dhcp_enabled": nic.get("DHCPEnabled"),
+            "status": "up", "speed_mbps": round(matching_adapter["Speed"] / 1_000_000) if matching_adapter and matching_adapter.get("Speed") else None,
+            "interface_type": "ethernet",
+        })
+
+    software = [{
+        "name": s.get("DisplayName"), "version": s.get("DisplayVersion"),
+        "publisher": s.get("Publisher"), "install_date": None,
+    } for s in sw_list if s and s.get("DisplayName")]
+
+    services = [{
+        "name": s.get("Name"), "display_name": s.get("DisplayName"),
+        "status": (s.get("State") or "").lower() or None, "start_type": (s.get("StartMode") or "").lower() or None,
+    } for s in srv_list if s]
+
+    processes = [{
+        "pid": p.get("ProcessId"), "name": p.get("Name"), "command_line": p.get("CommandLine"),
+        "memory_bytes": p.get("WorkingSetSize"), "user_name": None, "cpu_percent": None, "status": None,
+    } for p in proc_list if p]
+
+    firewall_profiles = {f.get("Name", "").lower(): bool(f.get("Enabled")) for f in firewall_list if f and f.get("Name")}
+    bitlocker_status = None
+    if bitlocker_list:
+        statuses = {b.get("ProtectionStatus") for b in bitlocker_list if b}
+        bitlocker_status = "Enabled" if any(s == 1 for s in statuses) else "Disabled" if statuses else None
+
+    return {
+        "inv": {
+            "computer_name": sys_info.get("Name"), "manufacturer": sys_info.get("Manufacturer"),
+            "model": sys_info.get("Model"), "serial_number": bios_info.get("SerialNumber"),
+            "bios_version": bios_info.get("Version"), "motherboard": board_info.get("Product"),
+            "domain": sys_info.get("Domain") if sys_info.get("PartOfDomain") else None,
+            "workgroup": sys_info.get("Domain") if not sys_info.get("PartOfDomain") else None,
+            "os_name": os_info.get("Caption"), "os_edition": None, "os_build": os_info.get("BuildNumber"),
+            "os_version": os_info.get("Version"), "os_install_date": os_info.get("InstallDate"),
+            "os_last_boot": os_info.get("LastBootUpTime"), "os_timezone": None,
+            "antivirus": "Windows Defender" if defender.get("AntivirusEnabled") else None,
+            "bitlocker_status": bitlocker_status,
+            "firewall_status": "Enabled" if any(firewall_profiles.values()) else ("Disabled" if firewall_profiles else None),
+            "uptime": None, "raw_details": {"os_architecture": os_info.get("OSArchitecture")},
+        },
+        "system_uuid": None,
+        "processors": processors,
+        "memory": [{
+            "total_ram_bytes": total_ram_bytes, "available_ram_bytes": None,
+            "memory_slots": len(ram_modules) or None, "ram_modules": ram_modules or None,
+            "configured_speed_mhz": speeds[0] if speeds else None,
+        }] if total_ram_bytes else [],
+        "storage": storage,
+        "partitions": partitions,
+        "interfaces": interfaces,
+        "software": software,
+        "services": services,
+        "processes": processes,
+        "security": {
+            "defender_enabled": defender.get("AntivirusEnabled"),
+            "defender_signature_version": defender.get("AntivirusSignatureVersion"),
+            "firewall_enabled": any(firewall_profiles.values()) if firewall_profiles else None,
+            "firewall_profiles": firewall_profiles or None,
+            "bitlocker_status": bitlocker_status,
+            "secure_boot_enabled": bool(secure_boot) if secure_boot is not None else None,
+            "antivirus_product": "Windows Defender" if defender.get("AntivirusEnabled") else None,
+            "antivirus_up_to_date": bool(defender.get("RealTimeProtectionEnabled")) if defender else None,
+            "pending_updates_count": None,
+            "last_update_installed_at": updates_list[0].get("InstalledOn") if updates_list and updates_list[0] else None,
+        },
+    }
+
+
+async def collect_network_device_inventory(snmp_target: SnmpTarget) -> dict:
+    """SNMP-based collection for routers/switches/firewalls/APs (section 5).
+    Every field left None means the device's MIB implementation didn't
+    expose it — never fabricated."""
+    sys_descr = await snmp_get(snmp_target, snmp_client.OID_SYS_DESCR)
+    sys_name = await snmp_get(snmp_target, snmp_client.OID_SYS_NAME)
+    sys_uptime = await snmp_get(snmp_target, snmp_client.OID_SYS_UPTIME)
+
+    ent_mfg = await snmp_walk(snmp_target, snmp_client.OID_ENT_PHYSICAL_MFG_NAME)
+    ent_model = await snmp_walk(snmp_target, snmp_client.OID_ENT_PHYSICAL_MODEL_NAME)
+    ent_serial = await snmp_walk(snmp_target, snmp_client.OID_ENT_PHYSICAL_SERIAL_NUM)
+    ent_sw_rev = await snmp_walk(snmp_target, snmp_client.OID_ENT_PHYSICAL_SOFTWARE_REV)
+
+    if_descr = await snmp_walk(snmp_target, snmp_client.OID_IF_DESCR)
+    if_mac = await snmp_walk(snmp_target, snmp_client.OID_IF_PHYS_ADDRESS)
+    if_oper = await snmp_walk(snmp_target, snmp_client.OID_IF_OPER_STATUS)
+    if_high_speed = await snmp_walk(snmp_target, snmp_client.OID_IF_HIGH_SPEED)
+
+    if_mac_by_idx = dict(if_mac)
+    if_oper_by_idx = dict(if_oper)
+    if_speed_by_idx = dict(if_high_speed)
+    interfaces = []
+    for idx, descr in if_descr:
+        interfaces.append({
+            "interface_name": descr, "mac_address": if_mac_by_idx.get(idx) or None,
+            "status": "up" if if_oper_by_idx.get(idx) == "1" else "down",
+            "speed_mbps": int(if_speed_by_idx[idx]) if if_speed_by_idx.get(idx, "").isdigit() else None,
+            "ip_addresses": [], "dns_servers": [], "gateway": None, "dhcp_enabled": None,
+            "interface_type": "ethernet",
+        })
+
+    cpu_load = await snmp_walk(snmp_target, snmp_client.OID_HR_PROCESSOR_LOAD)
+    avg_cpu_load = None
+    if cpu_load:
+        try:
+            avg_cpu_load = round(sum(int(v) for _, v in cpu_load) / len(cpu_load))
+        except (ValueError, ZeroDivisionError):
+            avg_cpu_load = None
+
+    return {
+        "inv": {
+            "computer_name": sys_name, "manufacturer": (ent_mfg[0][1] if ent_mfg else None),
+            "model": (ent_model[0][1] if ent_model else None),
+            "serial_number": (ent_serial[0][1] if ent_serial else None),
+            "bios_version": (ent_sw_rev[0][1] if ent_sw_rev else None),
+            "motherboard": None, "domain": None, "workgroup": None,
+            "os_name": sys_descr, "os_edition": None, "os_build": None, "os_version": None,
+            "os_install_date": None, "os_last_boot": None, "os_timezone": None,
+            "antivirus": None, "bitlocker_status": None, "firewall_status": None,
+            "uptime": sys_uptime, "raw_details": {"sys_descr": sys_descr},
+        },
+        "processors": [{"processor_name": "SNMP-reported", "cpu_load_percent": avg_cpu_load}] if avg_cpu_load is not None else [],
+        "memory": [],
+        "storage": [],
+        "partitions": [],
+        "interfaces": interfaces,
+        "software": [],
+        "services": [],
+        "processes": [],
+        "security": {},
     }
 
 
@@ -1934,7 +1719,6 @@ async def run_inventory_collection(
     device_id: uuid.UUID,
     actor_id: uuid.UUID | None = None
 ) -> None:
-    # 1. Fetch Device
     device_q = await db.execute(select(Device).where(and_(
         Device.organization_id == organization_id,
         Device.id == device_id,
@@ -1944,270 +1728,248 @@ async def run_inventory_collection(
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    # 2. Fetch Credentials
     cred_q = await db.execute(select(Credential).where(and_(
         Credential.organization_id == organization_id,
         Credential.deleted_at.is_(None)
     )))
     credentials = list(cred_q.scalars().all())
 
-    # Simulate/attempt connection and gather detailed inventory
     dev_type = device.device_type
-    ip = device.ip_address or "127.0.0.1"
-    h_suffix = hashlib.md5(ip.encode()).hexdigest()[:8].upper()
+    ip = device.ip_address
+    device.scan_status = DeviceScanStatus.SCANNING.value
+    await db.flush()
 
-    # Determine protocol based on device type
+    await write_audit_log(
+        db, organization_id=organization_id, actor_type="user" if actor_id else "system",
+        actor_user_id=actor_id, action="inventory.collect", resource_type="devices",
+        resource_id=device.id, before_state={"status": device.status},
+    )
+
+    if not ip:
+        device.auth_success = False
+        device.auth_error = "Device has no known IP address to connect to"
+        device.scan_status = DeviceScanStatus.FAILED.value
+        await db.commit()
+        return
+
     protocol_type = "snmp"
-    if dev_type == "windows":
+    if dev_type == DeviceType.WINDOWS.value:
         protocol_type = "winrm"
-    elif dev_type in ["linux", "macos", "virtual_machine", "docker_host"]:
+    elif dev_type in (DeviceType.LINUX.value, DeviceType.MACOS.value, DeviceType.VIRTUAL_MACHINE.value, DeviceType.DOCKER_HOST.value):
         protocol_type = "ssh"
 
-    matching_creds = []
-    if protocol_type == "winrm":
-        matching_creds = [c for c in credentials if c.credential_type == "winrm"]
-    elif protocol_type == "snmp":
-        matching_creds = [c for c in credentials if c.credential_type == "snmp"]
-    elif protocol_type == "ssh":
-        matching_creds = [c for c in credentials if c.credential_type in ["ssh_password", "ssh_key"]]
-
-    # Audit log entry
-    await write_audit_log(
-        db,
-        organization_id=organization_id,
-        actor_type="user" if actor_id else "system",
-        actor_user_id=actor_id,
-        action="inventory.collect",
-        resource_type="devices",
-        resource_id=device.id,
-        before_state={"status": device.status}
-    )
+    matching_creds = {
+        "winrm": [c for c in credentials if c.credential_type == CredentialType.WINRM.value],
+        "ssh": [c for c in credentials if c.credential_type in (CredentialType.SSH_PASSWORD.value, CredentialType.SSH_KEY.value)],
+        "snmp": [c for c in credentials if c.credential_type in (CredentialType.SNMP_V2C.value, CredentialType.SNMP_V3.value)],
+    }[protocol_type]
 
     if not matching_creds:
         device.auth_success = False
         device.auth_error = f"No {protocol_type.upper()} credentials configured for organization"
+        device.scan_status = DeviceScanStatus.CREDENTIALS_REQUIRED.value
         await db.commit()
-        raise HTTPException(status_code=400, detail=device.auth_error)
+        return
 
-    # Decrypt credential
-    secret_str = ""
+    cred = matching_creds[0]
     try:
-        cred = matching_creds[0]
-        # Resolve credential secret from Vault
         secret_dict = await resolve_credential_secret(db, organization_id=organization_id, credential_id=cred.id)
-        secret_str = secret_dict.get("secret", "")
     except Exception as e:
         device.auth_success = False
         device.auth_error = f"Failed to decrypt credentials: {str(e)}"
+        device.scan_status = DeviceScanStatus.FAILED.value
         await db.commit()
-        raise HTTPException(status_code=400, detail=device.auth_error)
+        return
 
-    # Attempt actual connections using real protocols
-    telemetry_data = None
-    if protocol_type == "winrm":
-        port = 5986 if device.open_ports and 5986 in device.open_ports.get("ports", []) else 5985
-        try:
-            telemetry_data = await attempt_winrm_inventory(ip, port, cred, secret_str)
-        except Exception as e:
-            print(f"WinRM connect attempt failed: {e}")
-    elif protocol_type == "ssh":
-        port = 22
-        try:
-            telemetry_data = await attempt_ssh_inventory(ip, port, cred, secret_str)
-        except Exception as e:
-            print(f"SSH connect attempt failed: {e}")
-    elif protocol_type == "snmp":
-        port = 161
-        try:
-            telemetry_data = await attempt_snmp_inventory(ip, port, cred, secret_str)
-        except Exception as e:
-            print(f"SNMP connect attempt failed: {e}")
+    dynamic_data: dict | None = None
+    try:
+        if protocol_type == "winrm":
+            port = 5986 if device.open_ports and 5986 in device.open_ports.get("ports", []) else 5985
+            target = WinRmTarget(host=ip, username=secret_dict.get("username", ""), password=secret_dict.get("secret", ""), port=port, ssl=(port == 5986))
+            raw = await collect_windows_inventory(target)
+            if raw:
+                dynamic_data = parse_windows_inventory(raw, ip)
+        elif protocol_type == "ssh":
+            target = SshTarget(
+                host=ip, username=secret_dict.get("username", ""),
+                password=secret_dict.get("secret") if cred.credential_type == CredentialType.SSH_PASSWORD.value else None,
+                private_key=secret_dict.get("secret") if cred.credential_type == CredentialType.SSH_KEY.value else None,
+                port=22,
+            )
+            raw = await collect_linux_inventory(target)
+            if raw:
+                dynamic_data = parse_linux_inventory(raw, ip)
+                if dynamic_data.get("system_uuid"):
+                    device.uuid = dynamic_data["system_uuid"]
+        elif protocol_type == "snmp":
+            snmp_target = SnmpTarget(
+                host=ip,
+                community=secret_dict.get("secret") if cred.credential_type == CredentialType.SNMP_V2C.value else None,
+                version="3" if cred.credential_type == CredentialType.SNMP_V3.value else "2c",
+                username=secret_dict.get("username"),
+            )
+            dynamic_data = await collect_network_device_inventory(snmp_target)
+    except Exception as e:
+        device.auth_success = False
+        device.auth_error = f"{protocol_type.upper()} connection failed: {str(e)}"
+        device.scan_status = DeviceScanStatus.FAILED.value
+        await db.commit()
+        return
+
+    if not dynamic_data:
+        device.auth_success = False
+        device.auth_error = f"Connected but received no usable {protocol_type.upper()} response"
+        device.scan_status = DeviceScanStatus.FAILED.value
+        await db.commit()
+        return
 
     device.auth_success = True
     device.auth_error = None
 
-    # Gather data based on device type
-    new_inv = {}
-    new_interfaces = []
-    new_storage = []
-    new_memory = []
-    new_processors = []
-    new_software = []
-    new_services = []
+    new_inv = dict(dynamic_data.get("inv") or {})
+    new_inv.pop("computer_name", None)
+    computer_name = (dynamic_data.get("inv") or {}).get("computer_name") or device.name
+    new_processors = [{k: v for k, v in p.items() if k != "cpu_load_percent"} for p in dynamic_data.get("processors", [])]
+    new_memory = dynamic_data.get("memory", [])
+    new_storage_raw = dynamic_data.get("storage", [])
+    new_partitions_raw = dynamic_data.get("partitions", [])
+    new_interfaces_raw = dynamic_data.get("interfaces", [])
+    new_software = dynamic_data.get("software", [])
+    new_services = dynamic_data.get("services", [])
+    new_processes = dynamic_data.get("processes", [])
+    new_security = dynamic_data.get("security", {})
 
-    dynamic_data = None
-    if telemetry_data:
-        if protocol_type == "ssh" and "raw_stdout" in telemetry_data:
-            try:
-                dynamic_data = parse_ssh_telemetry(telemetry_data["raw_stdout"], ip)
-            except Exception as e:
-                print(f"Failed to parse SSH telemetry: {e}")
-        elif protocol_type == "winrm" and "raw_stdout" in telemetry_data:
-            try:
-                dynamic_data = parse_winrm_telemetry(telemetry_data["raw_stdout"], ip)
-            except Exception as e:
-                print(f"Failed to parse WinRM telemetry: {e}")
-        elif protocol_type == "snmp":
-            try:
-                dynamic_data = parse_snmp_telemetry(telemetry_data, ip)
-            except Exception as e:
-                print(f"Failed to parse SNMP telemetry: {e}")
-
-    if dynamic_data:
-        new_inv = dynamic_data["inv"]
-        new_processors = dynamic_data["processors"]
-        new_memory = dynamic_data["memory"]
-        new_storage = dynamic_data["storage"]
-        new_interfaces = dynamic_data["interfaces"]
-        new_software = dynamic_data["software"]
-        new_services = dynamic_data["services"]
-    else:
-        fallback = get_static_fallback_data(dev_type, device, h_suffix)
-        new_inv = fallback["inv"]
-        new_processors = fallback["processors"]
-        new_memory = fallback["memory"]
-        new_storage = fallback["storage"]
-        new_interfaces = fallback["interfaces"]
-        new_software = fallback["software"]
-        new_services = fallback["services"]
-
-    # Write/Update and compare to generate history
-    # 1. DeviceInventory
+    # 1. DeviceInventory (1:1)
     inv_q = await db.execute(select(DeviceInventory).where(DeviceInventory.device_id == device.id))
     inv = inv_q.scalar_one_or_none()
+    inv_fields = {**new_inv, "computer_name": computer_name}
     if not inv:
-        inv = DeviceInventory(organization_id=organization_id, device_id=device.id, **new_inv)
+        inv = DeviceInventory(organization_id=organization_id, device_id=device.id, **inv_fields)
         db.add(inv)
         db.add(DeviceInventoryHistory(
-            organization_id=organization_id,
-            device_id=device.id,
-            change_type="hardware_added",
-            component="system",
-            description=f"Initial system inventory recorded: {new_inv['computer_name']} running {new_inv['os_name']}."
+            organization_id=organization_id, device_id=device.id, change_type="hardware_added",
+            component="system", description=f"Initial system inventory recorded for {computer_name}.",
         ))
     else:
-        # Check OS/Model changes
-        desc_parts = []
-        if inv.os_version != new_inv["os_version"]:
-            desc_parts.append(f"OS Version upgraded from {inv.os_version} to {new_inv['os_version']}")
-        if inv.uptime != new_inv["uptime"]:
-            inv.uptime = new_inv["uptime"]
-            
-        for k, v in new_inv.items():
-            setattr(inv, k, v)
-        if desc_parts:
+        changed = inv.os_version != inv_fields.get("os_version")
+        for k, v in inv_fields.items():
+            if v is not None:
+                setattr(inv, k, v)
+        if changed:
             db.add(DeviceInventoryHistory(
-                organization_id=organization_id,
-                device_id=device.id,
-                change_type="status_changed",
-                component="system",
-                description="; ".join(desc_parts)
+                organization_id=organization_id, device_id=device.id, change_type="status_changed",
+                component="system", description=f"OS version changed to {inv_fields.get('os_version')}.",
             ))
 
-    # 2. Processors
-    proc_q = await db.execute(select(DeviceProcessor).where(DeviceProcessor.device_id == device.id))
-    existing_procs = list(proc_q.scalars().all())
-    for p in existing_procs:
+    # 2. Processors — delete+reinsert (point-in-time, matches existing convention)
+    for p in (await db.execute(select(DeviceProcessor).where(DeviceProcessor.device_id == device.id))).scalars().all():
         await db.delete(p)
     for p in new_processors:
         db.add(DeviceProcessor(organization_id=organization_id, device_id=device.id, **p))
-    if not existing_procs or existing_procs[0].processor_name != new_processors[0]["processor_name"]:
-        db.add(DeviceInventoryHistory(
-            organization_id=organization_id,
-            device_id=device.id,
-            change_type="hardware_added",
-            component="processor",
-            description=f"Processor updated to: {new_processors[0]['processor_name']} ({new_processors[0]['cores']} Cores)."
-        ))
 
     # 3. Memory
-    mem_q = await db.execute(select(DeviceMemory).where(DeviceMemory.device_id == device.id))
-    existing_mem = list(mem_q.scalars().all())
-    for m in existing_mem:
+    for m in (await db.execute(select(DeviceMemory).where(DeviceMemory.device_id == device.id))).scalars().all():
         await db.delete(m)
     for m in new_memory:
         db.add(DeviceMemory(organization_id=organization_id, device_id=device.id, **m))
-    if not existing_mem or existing_mem[0].total_ram_bytes != new_memory[0]["total_ram_bytes"]:
-        db.add(DeviceInventoryHistory(
-            organization_id=organization_id,
-            device_id=device.id,
-            change_type="hardware_added",
-            component="memory",
-            description=f"RAM configured/changed to: {new_memory[0]['total_ram_bytes'] // (1024**3)} GB."
-        ))
 
-    # 4. Storage
-    stor_q = await db.execute(select(DeviceStorage).where(DeviceStorage.device_id == device.id))
-    existing_stor = list(stor_q.scalars().all())
-    for s in existing_stor:
+    # 4. Storage + Partitions
+    for s in (await db.execute(select(DeviceStorage).where(DeviceStorage.device_id == device.id))).scalars().all():
         await db.delete(s)
-    for s in new_storage:
-        db.add(DeviceStorage(organization_id=organization_id, device_id=device.id, **s))
-    if not existing_stor or len(existing_stor) != len(new_storage):
-        db.add(DeviceInventoryHistory(
-            organization_id=organization_id,
-            device_id=device.id,
-            change_type="hardware_added",
-            component="disk",
-            description=f"Storage units refreshed. Identified {len(new_storage)} storage disk(s)."
+    for p in (await db.execute(select(DevicePartition).where(DevicePartition.device_id == device.id))).scalars().all():
+        await db.delete(p)
+    await db.flush()
+    for s in new_storage_raw:
+        storage_row = DeviceStorage(
+            organization_id=organization_id, device_id=device.id,
+            disk_model=s.get("disk_model"), serial_number=s.get("serial_number"),
+            capacity_bytes=s.get("capacity_bytes"), free_space_bytes=s.get("free_space_bytes"),
+            partitions=s.get("partitions"), interface_type=s.get("interface_type"),
+            media_type=s.get("media_type"), health_status=s.get("health_status"),
+        )
+        db.add(storage_row)
+    for p in new_partitions_raw:
+        db.add(DevicePartition(
+            organization_id=organization_id, device_id=device.id, storage_id=None,
+            mount_point=p.get("mount_point"), device_node=p.get("device_node"),
+            filesystem_type=p.get("filesystem_type"), capacity_bytes=p.get("capacity_bytes"),
+            used_bytes=p.get("used_bytes"), free_space_bytes=p.get("free_space_bytes"),
         ))
 
-    # 5. Interfaces
-    int_q = await db.execute(select(DeviceNetworkInterface).where(DeviceNetworkInterface.device_id == device.id))
-    existing_ints = list(int_q.scalars().all())
-    for i in existing_ints:
+    # 5. Network interfaces
+    for i in (await db.execute(select(DeviceNetworkInterface).where(DeviceNetworkInterface.device_id == device.id))).scalars().all():
         await db.delete(i)
-    for i in new_interfaces:
-        db.add(DeviceNetworkInterface(organization_id=organization_id, device_id=device.id, **i))
+    for i in new_interfaces_raw:
+        db.add(DeviceNetworkInterface(
+            organization_id=organization_id, device_id=device.id,
+            interface_name=i.get("interface_name") or "unknown", mac_address=i.get("mac_address"),
+            ip_addresses=i.get("ip_addresses"), dns_servers=i.get("dns_servers"),
+            gateway=i.get("gateway"), dhcp_enabled=i.get("dhcp_enabled"), status=i.get("status", "up"),
+            speed_mbps=i.get("speed_mbps"), duplex=i.get("duplex"), interface_type=i.get("interface_type"),
+        ))
 
-    # 6. Software
-    sw_q = await db.execute(select(DeviceInstalledSoftware).where(DeviceInstalledSoftware.device_id == device.id))
-    existing_sw = list(sw_q.scalars().all())
+    # 6. Software (diffed for history, matches existing convention)
+    existing_sw = list((await db.execute(select(DeviceInstalledSoftware).where(DeviceInstalledSoftware.device_id == device.id))).scalars().all())
     existing_sw_names = {s.name: s.version for s in existing_sw}
-    
     for sw in new_software:
         if sw["name"] not in existing_sw_names:
             db.add(DeviceInventoryHistory(
-                organization_id=organization_id,
-                device_id=device.id,
-                change_type="software_installed",
-                component="software",
-                description=f"Installed software: {sw['name']} (version {sw['version']})."
+                organization_id=organization_id, device_id=device.id, change_type="software_installed",
+                component="software", description=f"Installed software: {sw['name']} (version {sw.get('version') or 'unknown'}).",
             ))
-        elif existing_sw_names[sw["name"]] != sw["version"]:
+        elif existing_sw_names[sw["name"]] != sw.get("version"):
             db.add(DeviceInventoryHistory(
-                organization_id=organization_id,
-                device_id=device.id,
-                change_type="software_installed",
-                component="software",
-                description=f"Upgraded software {sw['name']} to version {sw['version']}."
+                organization_id=organization_id, device_id=device.id, change_type="software_installed",
+                component="software", description=f"Upgraded software {sw['name']} to version {sw.get('version')}.",
             ))
-            
     new_sw_names = {s["name"] for s in new_software}
-    for name, version in existing_sw_names.items():
+    for name in existing_sw_names:
         if name not in new_sw_names:
             db.add(DeviceInventoryHistory(
-                organization_id=organization_id,
-                device_id=device.id,
-                change_type="software_uninstalled",
-                component="software",
-                description=f"Uninstalled software: {name}."
+                organization_id=organization_id, device_id=device.id, change_type="software_uninstalled",
+                component="software", description=f"Uninstalled software: {name}.",
             ))
-
     for s in existing_sw:
         await db.delete(s)
-    for s in new_software:
-        db.add(DeviceInstalledSoftware(organization_id=organization_id, device_id=device.id, **s))
+    for sw in new_software:
+        db.add(DeviceInstalledSoftware(organization_id=organization_id, device_id=device.id, **sw))
 
     # 7. Services
-    srv_q = await db.execute(select(DeviceService).where(DeviceService.device_id == device.id))
-    existing_srvs = list(srv_q.scalars().all())
-    for srv in existing_srvs:
+    for srv in (await db.execute(select(DeviceService).where(DeviceService.device_id == device.id))).scalars().all():
         await db.delete(srv)
     for srv in new_services:
         db.add(DeviceService(organization_id=organization_id, device_id=device.id, **srv))
 
+    # 8. Processes — point-in-time snapshot
+    for proc in (await db.execute(select(DeviceProcess).where(DeviceProcess.device_id == device.id))).scalars().all():
+        await db.delete(proc)
+    now = datetime.utcnow()
+    for proc in new_processes:
+        if proc.get("pid") is None or not proc.get("name"):
+            continue
+        db.add(DeviceProcess(organization_id=organization_id, device_id=device.id, collected_at=now, **proc))
+
+    # 9. Security (1:1)
+    if new_security:
+        sec_q = await db.execute(select(DeviceSecurity).where(DeviceSecurity.device_id == device.id))
+        sec = sec_q.scalar_one_or_none()
+        sec_fields = {k: v for k, v in new_security.items() if v is not None}
+        if not sec:
+            db.add(DeviceSecurity(organization_id=organization_id, device_id=device.id, collected_at=now, **sec_fields))
+        else:
+            for k, v in sec_fields.items():
+                setattr(sec, k, v)
+            sec.collected_at = now
+
+    device.scan_status = DeviceScanStatus.COMPLETED.value
     await db.commit()
+
+    scan_history_q = await db.execute(
+        select(DeviceScanHistory.scan_id).where(DeviceScanHistory.device_id == device.id).order_by(DeviceScanHistory.created_at.desc()).limit(1)
+    )
+    latest_scan_id = scan_history_q.scalar_one_or_none()
+    if latest_scan_id:
+        await finalize_scan_if_complete(db, latest_scan_id)
 
 
 async def run_device_inventory_task(
@@ -2216,23 +1978,22 @@ async def run_device_inventory_task(
     device_id: uuid.UUID,
     actor_id: uuid.UUID | None = None
 ) -> None:
-    max_retries = 3
-    for attempt in range(max_retries):
+    """Single-attempt wrapper — retry/backoff now lives at the Celery task
+    layer (app/workers/tasks/discovery_tasks.py's `self.retry(...)`), not
+    here, so this no longer reimplements it manually."""
+    async with db_session_factory() as db:
         try:
-            async with db_session_factory() as db:
-                await run_inventory_collection(db, organization_id, device_id, actor_id)
-                return
+            await run_inventory_collection(db, organization_id, device_id, actor_id)
         except Exception as e:
-            if attempt == max_retries - 1:
-                async with db_session_factory() as db:
-                    device_q = await db.execute(select(Device).where(Device.id == device_id))
-                    dev = device_q.scalar_one_or_none()
-                    if dev:
-                        dev.auth_success = False
-                        dev.auth_error = f"Inventory collection failed after {max_retries} attempts: {str(e)}"
-                        await db.commit()
-            else:
-                await asyncio.sleep(2.0 ** attempt)
+            async with db_session_factory() as fail_db:
+                device_q = await fail_db.execute(select(Device).where(Device.id == device_id))
+                dev = device_q.scalar_one_or_none()
+                if dev:
+                    dev.auth_success = False
+                    dev.auth_error = f"Inventory collection failed: {str(e)}"
+                    dev.scan_status = DeviceScanStatus.FAILED.value
+                    await fail_db.commit()
+            raise
 
 
 async def get_device_hardware(db: AsyncSession, organization_id: uuid.UUID, device_id: uuid.UUID):
@@ -2266,12 +2027,19 @@ async def get_device_hardware(db: AsyncSession, organization_id: uuid.UUID, devi
     )))
     interfaces = list(int_q.scalars().all())
 
+    part_q = await db.execute(select(DevicePartition).where(and_(
+        DevicePartition.organization_id == organization_id,
+        DevicePartition.device_id == device_id
+    )))
+    partitions = list(part_q.scalars().all())
+
     return {
         "inventory": inventory,
         "processors": processors,
         "memory": memory,
         "storage": storage,
-        "interfaces": interfaces
+        "interfaces": interfaces,
+        "partitions": partitions,
     }
 
 
@@ -2292,6 +2060,30 @@ async def get_device_software(db: AsyncSession, organization_id: uuid.UUID, devi
         "installed_software": installed_software,
         "services": services
     }
+
+
+async def get_device_processes(db: AsyncSession, organization_id: uuid.UUID, device_id: uuid.UUID) -> list[DeviceProcess]:
+    await get_device_detail(db, organization_id, device_id)
+    q = await db.execute(select(DeviceProcess).where(and_(
+        DeviceProcess.organization_id == organization_id, DeviceProcess.device_id == device_id
+    )).order_by(DeviceProcess.memory_bytes.desc().nullslast()))
+    return list(q.scalars().all())
+
+
+async def get_device_security(db: AsyncSession, organization_id: uuid.UUID, device_id: uuid.UUID) -> DeviceSecurity | None:
+    await get_device_detail(db, organization_id, device_id)
+    q = await db.execute(select(DeviceSecurity).where(and_(
+        DeviceSecurity.organization_id == organization_id, DeviceSecurity.device_id == device_id
+    )))
+    return q.scalar_one_or_none()
+
+
+async def get_device_ports(db: AsyncSession, organization_id: uuid.UUID, device_id: uuid.UUID) -> list[DevicePort]:
+    await get_device_detail(db, organization_id, device_id)
+    q = await db.execute(select(DevicePort).where(and_(
+        DevicePort.organization_id == organization_id, DevicePort.device_id == device_id
+    )).order_by(DevicePort.port_number.asc()))
+    return list(q.scalars().all())
 
 
 async def get_device_all_history(db: AsyncSession, organization_id: uuid.UUID, device_id: uuid.UUID):

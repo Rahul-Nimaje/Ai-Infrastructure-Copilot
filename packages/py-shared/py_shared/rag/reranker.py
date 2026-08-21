@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Protocol
 
-from app.rag.retrieval.vector_store import ChunkResult
+from py_shared.rag.vector_store import ChunkResult
 
 
 class Reranker(Protocol):

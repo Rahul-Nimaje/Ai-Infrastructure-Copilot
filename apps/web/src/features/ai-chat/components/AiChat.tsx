@@ -9,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import { API_BASE_URL, getAccessToken } from "@/lib/api-client";
-import { PageHeader } from "@/components/common";
+import { PageHeader, MarkdownContent } from "@/components/common";
 import { useAiChat } from "@/hooks";
 import type { ChatMessage, ProposedAction } from "../types";
 import { PROPOSALS_RISK_VARIANTS } from "../utils/constants";
@@ -197,7 +197,17 @@ export function AiChat() {
                       : "bg-muted/70 text-foreground border border-border/30 rounded-tl-none"
                   }`}
                 >
-                  {m.content || (streaming ? <span className="animate-pulse">Typing...</span> : "")}
+                  {m.content ? (
+                    m.role === "assistant" ? (
+                      <MarkdownContent content={m.content} />
+                    ) : (
+                      m.content
+                    )
+                  ) : streaming ? (
+                    <span className="animate-pulse">Typing...</span>
+                  ) : (
+                    ""
+                  )}
                   {m.role === "assistant" && m.sources && m.sources.length > 0 && (
                     <SourceCitations sources={m.sources} />
                   )}
