@@ -1,0 +1,39 @@
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+*.tsbuildinfo
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+alembic/versions/__pycache__/
+
+# Env
+.env
+.env.local
+*.local.yml.bak
+
+# Logs
+*.log
+logs/
+
+# App storage / runtime data
+apps/api/storage/
+
+# CodeGraph
+.codegraph/*.db
+.codegraph/*.db-wal
+.codegraph/*.db-shm
+.codegraph/cache/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>doc-page:not(:defined){visibility:hidden}</style>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Manrope', sans-serif; -webkit-font-smoothing: antialiased; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  @media print {
+    *, *::before, *::after {
+      animation-delay: -99s !important; animation-duration: .001s !important;
+      animation-iteration-count: 1 !important; animation-fill-mode: both !important;
+      animation-play-state: running !important; transition-duration: 0s !important;
+    }
+  }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 10px; font-size: 12px; }
+  tr { break-inside: avoid; }
+  .card { break-inside: avoid; }
+</style>
+<script>
+addEventListener('load', () => {
+  (async () => {
+    try { await document.fonts.ready; } catch (e) {}
+    setTimeout(() => window.print(), 500);
+  })();
+});
+</script>
+</helmet>
+
+<x-import component-from-global-scope="doc-page" from="./doc-page.js" size="letter" orientation="portrait" margin="0.75in" hint-size="100%,100%">
+
+  <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #161b22;padding-bottom:14px;margin-bottom:22px;">
+    <div>
+      <div style="font-size:22px;font-weight:800;color:#161b22;letter-spacing:-0.01em;">AI Infrastructure Copilot</div>
+      <div style="font-size:12.5px;color:#5b6672;margin-top:2px;">Fleet Health Report — Acme Corp</div>
+    </div>
+    <div style="text-align:right;font-size:11.5px;color:#8a94a0;">
+      <div>Generated Jul 14, 2026</div>
+      <div>12 servers monitored</div>
+    </div>
+  </div>
+
+  <h2 style="font-size:15px;font-weight:800;color:#161b22;margin:0 0 10px;break-after:avoid;">Fleet Summary</h2>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:24px;">
+    <div class="card" style="border:1px solid #e2e7ed;border-radius:10px;padding:12px;">
+      <div style="font-size:10.5px;font-weight:700;color:#5b6672;text-transform:uppercase;letter-spacing:0.03em;">Total Servers</div>
+      <div style="font-size:22px;font-weight:800;color:#161b22;margin-top:4px;">12</div>
+    </div>
+    <div class="card" style="border:1px solid #e2e7ed;border-radius:10px;padding:12px;">
+      <div style="font-size:10.5px;font-weight:700;color:#5b6672;text-transform:uppercase;letter-spacing:0.03em;">Healthy</div>
+      <div style="font-size:22px;font-weight:800;color:#1d9a68;margin-top:4px;">8</div>
+    </div>
+    <div class="card" style="border:1px solid #e2e7ed;border-radius:10px;padding:12px;">
+      <div style="font-size:10.5px;font-weight:700;color:#5b6672;text-transform:uppercase;letter-spacing:0.03em;">Warning</div>
+      <div style="font-size:22px;font-weight:800;color:#b7791f;margin-top:4px;">3</div>
+    </div>
+    <div class="card" style="border:1px solid #e2e7ed;border-radius:10px;padding:12px;">
+      <div style="font-size:10.5px;font-weight:700;color:#5b6672;text-transform:uppercase;letter-spacing:0.03em;">Critical</div>
+      <div style="font-size:22px;font-weight:800;color:#d33d38;margin-top:4px;">1</div>
+    </div>
+  </div>
+
+  <h2 style="font-size:15px;font-weight:800;color:#161b22;margin:0 0 10px;break-after:avoid;">Infrastructure Categories</h2>
+  <table style="margin-bottom:24px;">
+    <thead>
+      <tr style="border-bottom:1.5px solid #161b22;">
+        <th>Category</th><th>Nodes</th><th>CPU avg</th><th>Memory avg</th><th>Disk avg</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td>Windows Servers</td><td>6</td><td>50%</td><td>65%</td><td>58%</td><td style="color:#d33d38;font-weight:700;">Critical</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td>Linux Servers</td><td>4</td><td>21%</td><td>41%</td><td>31%</td><td style="color:#1d9a68;font-weight:700;">Healthy</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td>Cloud (AWS/Azure/GCP)</td><td>3</td><td>43%</td><td>56%</td><td>45%</td><td style="color:#b7791f;font-weight:700;">Warning</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td>VMware vSphere</td><td>4</td><td>47%</td><td>58%</td><td>53%</td><td style="color:#b7791f;font-weight:700;">Warning</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td>Hyper-V Hosts</td><td>2</td><td>41%</td><td>51%</td><td>45%</td><td style="color:#1d9a68;font-weight:700;">Healthy</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td>Network Devices</td><td>3</td><td>31%</td><td>32%</td><td>—</td><td style="color:#b7791f;font-weight:700;">Warning</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td>Storage Arrays</td><td>2</td><td>11%</td><td>18%</td><td>70%</td><td style="color:#b7791f;font-weight:700;">Warning</td></tr>
+    </tbody>
+  </table>
+
+  <h2 style="font-size:15px;font-weight:800;color:#161b22;margin:0 0 10px;break-after:avoid;">Open Alerts</h2>
+  <table style="margin-bottom:24px;">
+    <thead>
+      <tr style="border-bottom:1.5px solid #161b22;">
+        <th>Severity</th><th>Alert</th><th>Server</th><th>Age</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td style="color:#d33d38;font-weight:700;">Critical</td><td>Sustained CPU &gt;95% for 12 minutes</td><td>SQL-PROD-01</td><td>4 min ago</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td style="color:#d33d38;font-weight:700;">Critical</td><td>Disk space below 6% free on D:\</td><td>FILE-SRV-01</td><td>22 min ago</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td style="color:#d33d38;font-weight:700;">Critical</td><td>Server unreachable — last heartbeat 3h ago</td><td>BACKUP-01</td><td>3h ago</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td style="color:#b7791f;font-weight:700;">Warning</td><td>High memory pressure, GC pauses detected</td><td>WEB-PROD-03</td><td>18 min ago</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td style="color:#b7791f;font-weight:700;">Warning</td><td>TLS certificate expires in 9 days</td><td>portal.acmecorp.io</td><td>1h ago</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td style="color:#b7791f;font-weight:700;">Warning</td><td>14 failed login attempts for jsmith</td><td>DC01</td><td>2h ago</td></tr>
+      <tr style="border-bottom:1px solid #e2e7ed;"><td style="color:#b7791f;font-weight:700;">Warning</td><td>Replication latency above threshold (18 min)</td><td>DC02</td><td>35 min ago</td></tr>
+    </tbody>
+  </table>
+
+  <div style="font-size:11px;color:#8a94a0;border-top:1px solid #e2e7ed;padding-top:10px;">AI Infrastructure Copilot v2.4.1 · © 2026 Acme Corp</div>
+
+</x-import>
+
+</x-dc>
+</body>
+</html>

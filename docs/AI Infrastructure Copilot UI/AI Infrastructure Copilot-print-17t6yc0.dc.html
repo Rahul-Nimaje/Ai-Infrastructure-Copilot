@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style data-omelette-print-defaults>
+@media print {
+  @page { margin: 0.5in; }
+  h1, h2, h3, h4, h5, h6 { break-after: avoid; }
+  figure, table, pre, blockquote, img, svg, tr, [class~="card" i] { break-inside: avoid; }
+  img, svg { max-width: 100%; }
+  p { orphans: 3; widows: 3; }
+}
+</style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="./infra-data.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: 'Manrope', sans-serif; -webkit-font-smoothing: antialiased; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: {{ theme.scrollbar }}; border-radius: 6px; }
+  @keyframes aicPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  @keyframes aicSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  @keyframes aicFadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes aicShimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+</style>
+</helmet>
+<div style="{{ rootStyle }}">
+
+  <!-- ===================== SIDEBAR ===================== -->
+  <div style="{{ sidebarStyle }}">
+    <div style="{{ sidebarHeaderStyle }}">
+      <div style="{{ logoMarkStyle }}">AI</div>
+      <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">
+        <div style="min-width:0;overflow:hidden;">
+          <div style="font-size:14px;font-weight:800;color:{{ theme.textPrimary }};white-space:nowrap;letter-spacing:-0.01em;">Infra Copilot</div>
+          <div style="font-size:11px;color:{{ theme.textTertiary }};white-space:nowrap;">Acme Corp</div>
+        </div>
+      </sc-if>
+      <button onClick="{{ toggleSidebar }}" style="{{ collapseBtnStyle }}" style-hover="{{ collapseBtnHover }}" title="Collapse sidebar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="{{ collapseChevronPoints }}"></polyline></svg>
+      </button>
+    </div>
+
+    <div style="flex:1;overflow-y:auto;padding:10px 10px 10px;">
+      <div onClick="{{ navGo.dashboard }}" style="{{ navRowStyle.dashboard }}" style-hover="{{ navRowHover }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="3" width="7" height="9" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="16" width="7" height="5" rx="1.5"></rect></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navLabelStyle }}">Dashboard</span></sc-if>
+      </div>
+
+      <div style="{{ navGroupHeaderStyle }}" onClick="{{ toggleInfraGroup }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="2" y="3" width="20" height="6" rx="1.5"></rect><rect x="2" y="15" width="20" height="6" rx="1.5"></rect><line x1="6" y1="6" x2="6" y2="6"></line><line x1="6" y1="18" x2="6" y2="18"></line></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">
+          <span style="{{ navLabelStyle }}flex:1;">Infrastructure</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="{{ chevronRotateStyle.infra }}"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </sc-if>
+      </div>
+      <sc-if value="{{ infraExpanded }}" hint-placeholder-val="{{ true }}">
+        <div>
+          <div onClick="{{ navGo.infrastructure }}" style="{{ navSubRowStyle.infrastructure }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">Overview</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">O</sc-if></div>
+          <div onClick="{{ navGo.servers }}" style="{{ navSubRowStyle.servers }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">Servers</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">S</sc-if></div>
+          <div onClick="{{ navGo.activeDirectory }}" style="{{ navSubRowStyle.activeDirectory }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">Active Directory</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">AD</sc-if></div>
+          <div onClick="{{ navGo.groupPolicy }}" style="{{ navSubRowStyle.groupPolicy }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">Group Policy</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">GP</sc-if></div>
+          <div onClick="{{ navGo.dns }}" style="{{ navSubRowStyle.dns }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">DNS</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">DN</sc-if></div>
+          <div onClick="{{ navGo.dhcp }}" style="{{ navSubRowStyle.dhcp }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">DHCP</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">DH</sc-if></div>
+        </div>
+      </sc-if>
+
+      <div style="{{ navGroupHeaderStyle }}" onClick="{{ toggleVirtGroup }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon><line x1="12" y1="22" x2="12" y2="15.5"></line><polyline points="22 8.5 12 15.5 2 8.5"></polyline></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">
+          <span style="{{ navLabelStyle }}flex:1;">Virtualization</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="{{ chevronRotateStyle.virt }}"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </sc-if>
+      </div>
+      <sc-if value="{{ virtExpanded }}" hint-placeholder-val="{{ false }}">
+        <div>
+          <div onClick="{{ navGo.vmware }}" style="{{ navSubRowStyle.vmware }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">VMware</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">VM</sc-if></div>
+          <div onClick="{{ navGo.hyperv }}" style="{{ navSubRowStyle.hyperv }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">Hyper-V</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">HV</sc-if></div>
+        </div>
+      </sc-if>
+
+      <div style="{{ navGroupHeaderStyle }}" onClick="{{ toggleCloudGroup }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">
+          <span style="{{ navLabelStyle }}flex:1;">Cloud</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="{{ chevronRotateStyle.cloud }}"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </sc-if>
+      </div>
+      <sc-if value="{{ cloudExpanded }}" hint-placeholder-val="{{ false }}">
+        <div>
+          <div onClick="{{ navGo.aws }}" style="{{ navSubRowStyle.aws }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">AWS</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">AW</sc-if></div>
+          <div onClick="{{ navGo.azure }}" style="{{ navSubRowStyle.azure }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">Azure</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">AZ</sc-if></div>
+          <div onClick="{{ navGo.gcp }}" style="{{ navSubRowStyle.gcp }}" style-hover="{{ navRowHover }}"><sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">GCP</sc-if><sc-if value="{{ isCollapsed }}" hint-placeholder-val="{{ false }}">GC</sc-if></div>
+        </div>
+      </sc-if>
+
+      <div style="{{ navDividerStyle }}"></div>
+
+      <div onClick="{{ navGo.eventLog }}" style="{{ navRowStyle.eventLog }}" style-hover="{{ navRowHover }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="12" y2="17"></line></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navLabelStyle }}">Event Log Analyzer</span></sc-if>
+      </div>
+
+      <div onClick="{{ navGo.powershell }}" style="{{ navRowStyle.powershell }}" style-hover="{{ navRowHover }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navLabelStyle }}">PowerShell Generator</span></sc-if>
+      </div>
+
+      <div onClick="{{ navGo.automation }}" style="{{ navRowStyle.automation }}" style-hover="{{ navRowHover }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="18" r="3"></circle><path d="M9 6h6a4 4 0 0 1 4 4v2"></path><path d="M15 18H9a4 4 0 0 1-4-4v-2"></path></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navLabelStyle }}">Automation</span></sc-if>
+      </div>
+
+      <div onClick="{{ navGo.alerts }}" style="{{ navRowStyle.alerts }}" style-hover="{{ navRowHover }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navLabelStyle }}flex:1;">Alerts</span></sc-if>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navBadgeStyle }}">{{ openAlertCount }}</span></sc-if>
+      </div>
+
+      <div onClick="{{ navGo.reports }}" style="{{ navRowStyle.reports }}" style-hover="{{ navRowHover }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navLabelStyle }}">Reports</span></sc-if>
+      </div>
+
+      <div onClick="{{ navGo.settings }}" style="{{ navRowStyle.settings }}" style-hover="{{ navRowHover }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navLabelStyle }}">Settings</span></sc-if>
+      </div>
+
+      <div style="{{ navDividerStyle }}"></div>
+
+      <div onClick="{{ navGo.aiChat }}" style="{{ navRowStyle.aiChat }}" style-hover="{{ navRowHover }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+        <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}"><span style="{{ navLabelStyle }}">AI Chat</span></sc-if>
+      </div>
+    </div>
+
+    <div style="{{ sidebarFooterStyle }}">
+      <div style="{{ userAvatarStyle }}">AA</div>
+      <sc-if value="{{ notCollapsed }}" hint-placeholder-val="{{ true }}">
+        <div style="min-width:0;overflow:hidden;flex:1;">
+          <div style="font-size:12.5px;font-weight:700;color:{{ theme.textPrimary }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Ava Chen</div>
+          <div style="font-size:11px;color:{{ theme.textTertiary }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">admin@acmecorp.io</div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+
+  <!-- ===================== MAIN COLUMN ===================== -->
+  <div style="{{ mainColStyle }}">
+
+    <!-- TOP BAR -->
+    <div style="{{ topbarStyle }}">
+      <div style="{{ orgSwitcherStyle }}">
+        <span style="font-weight:700;">Acme Corp</span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+      </div>
+
+      <div style="{{ searchBarStyle }}">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{ theme.textTertiary }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <span style="color:{{ theme.textTertiary }};font-size:13px;">Search servers, users, alerts, scripts…</span>
+        <span style="{{ kbdStyle }}">⌘K</span>
+      </div>
+
+      <div style="flex:1;"></div>
+
+      <div style="{{ serverStatusPillStyle }}">
+        <span style="{{ pulseDotStyle }}"></span>
+        <span>{{ healthyServerCount }}/{{ totalServerCount }} healthy</span>
+      </div>
+
+      <button style="{{ iconBtnStyle }}" style-hover="{{ iconBtnHover }}" title="Quick actions">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      </button>
+
+      <button style="{{ iconBtnStyle }}position:relative;" style-hover="{{ iconBtnHover }}" title="Notifications">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+        <span style="{{ notifDotStyle }}"></span>
+      </button>
+
+      <button onClick="{{ toggleTheme }}" style="{{ iconBtnStyle }}" style-hover="{{ iconBtnHover }}" title="Toggle theme">
+        <sc-if value="{{ isDark }}" hint-placeholder-val="{{ true }}">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+        </sc-if>
+        <sc-if value="{{ isLight }}" hint-placeholder-val="{{ false }}">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+        </sc-if>
+      </button>
+
+      <div style="{{ topbarDividerStyle }}"></div>
+
+      <button onClick="{{ toggleAiPanel }}" style="{{ aiPanelBtnStyle }}" style-hover="{{ aiPanelBtnHover }}" title="AI Assistant">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+        <span>Ask Copilot</span>
+      </button>
+
+      <div style="{{ userChipStyle }}">AC</div>
+    </div>
+
+    <!-- PAGE CONTENT -->
+    <div style="{{ pageWrapStyle }}">
+
+      <!-- ============ DASHBOARD ============ -->
+      <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ true }}">
+        <div data-screen-label="Dashboard">
+          <div style="{{ pageHeaderStyle }}">
+            <div>
+              <div style="{{ pageTitleStyle }}">Dashboard</div>
+              <div style="{{ pageSubtitleStyle }}">Fleet-wide health across {{ totalServerCount }} monitored servers</div>
+            </div>
+            <div style="{{ pageHeaderActionsStyle }}">
+              <span style="{{ liveBadgeStyle }}"><span style="{{ pulseDotStyle }}"></span>Live</span>
+            </div>
+          </div>
+
+          <div style="{{ statGridStyle }}">
+            <sc-for list="{{ statCards }}" as="card" hint-placeholder-count="8">
+              <div style="{{ card.cardStyle }}">
+                <div style="{{ statCardTopRowStyle }}">
+                  <span style="{{ statLabelStyle }}">{{ card.label }}</span>
+                  <div style="{{ card.iconWrapStyle }}">{{ card.icon }}</div>
+                </div>
+                <div style="{{ statValueStyle }}">{{ card.value }}</div>
+                <div style="{{ card.deltaStyle }}">{{ card.delta }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="{{ chartGridStyle }}">
+            <div style="{{ chartCardStyle }}">
+              <div style="{{ chartCardHeaderStyle }}">
+                <span style="{{ chartTitleStyle }}">CPU Usage — Fleet Average (24h)</span>
+              </div>
+              <div style="{{ sparklineWrapStyle }}">{{ cpuSparkline }}</div>
+            </div>
+            <div style="{{ chartCardStyle }}">
+              <div style="{{ chartCardHeaderStyle }}"><span style="{{ chartTitleStyle }}">Memory Usage — Fleet Average (24h)</span></div>
+              <div style="{{ sparklineWrapStyle }}">{{ memSparkline }}</div>
+            </div>
+            <div style="{{ chartCardStyle }}">
+              <div style="{{ chartCardHeaderStyle }}"><span style="{{ chartTitleStyle }}">Network Throughput (24h)</span></div>
+              <div style="{{ sparklineWrapStyle }}">{{ netSparkline }}</div>
+            </div>
+            <div style="{{ chartCardStyle }}">
+              <div style="{{ chartCardHeaderStyle }}"><span style="{{ chartTitleStyle }}">Server Health Distribution</span></div>
+              <div style="{{ healthBarsWrapStyle }}">
+                <sc-for list="{{ healthDistribution }}" as="row" hint-placeholder-count="4">
+                  <div style="{{ healthRowStyle }}">
+                    <span style="{{ healthRowLabelStyle }}">{{ row.label }}</span>
+                    <div style="{{ healthBarTrackStyle }}"><div style="{{ row.barStyle }}"></div></div>
+                    <span style="{{ healthRowCountStyle }}">{{ row.count }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="{{ chartCardStyle }}">
+              <div style="{{ chartCardHeaderStyle }}"><span style="{{ chartTitleStyle }}">Operating Systems</span></div>
+              <div style="{{ healthBarsWrapStyle }}">
+                <sc-for list="{{ osDistribution }}" as="row" hint-placeholder-count="3">
+                  <div style="{{ healthRowStyle }}">
+                    <span style="{{ healthRowLabelStyle }}">{{ row.label }}</span>
+                    <div style="{{ healthBarTrackStyle }}"><div style="{{ row.barStyle }}"></div></div>
+                    <span style="{{ healthRowCountStyle }}">{{ row.count }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="{{ chartCardStyle }}">
+              <div style="{{ chartCardHeaderStyle }}"><span style="{{ chartTitleStyle }}">Alert Timeline (7d)</span></div>
+              <div style="{{ alertTimelineWrapStyle }}">
+                <sc-for list="{{ alertTimeline }}" as="bar" hint-placeholder-count="7">
+                  <div style="{{ alertTimelineColStyle }}">
+                    <div style="{{ bar.criticalBarStyle }}"></div>
+                    <div style="{{ bar.warningBarStyle }}"></div>
+                    <span style="{{ alertTimelineDayStyle }}">{{ bar.day }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="{{ widgetGridStyle }}">
+            <div style="{{ widgetCardStyle }}">
+              <div style="{{ widgetHeaderStyle }}"><span style="{{ widgetTitleStyle }}">Recent Alerts</span><span onClick="{{ navGo.alerts }}" style="{{ widgetLinkStyle }}">View all →</span></div>
+              <sc-for list="{{ dashAlerts }}" as="a" hint-placeholder-count="4">
+                <div style="{{ widgetRowStyle }}">
+                  <span style="{{ a.dotStyle }}"></span>
+                  <div style="min-width:0;flex:1;">
+                    <div style="{{ widgetRowTitleStyle }}">{{ a.title }}</div>
+                    <div style="{{ widgetRowMetaStyle }}">{{ a.server }} · {{ a.time }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="{{ widgetCardStyle }}">
+              <div style="{{ widgetHeaderStyle }}"><span style="{{ widgetTitleStyle }}">Recent Automation Runs</span><span onClick="{{ navGo.automation }}" style="{{ widgetLinkStyle }}">View all →</span></div>
+              <sc-for list="{{ dashAutomations }}" as="w" hint-placeholder-count="4">
+                <div style="{{ widgetRowStyle }}">
+                  <span style="{{ w.dotStyle }}"></span>
+                  <div style="min-width:0;flex:1;">
+                    <div style="{{ widgetRowTitleStyle }}">{{ w.name }}</div>
+                    <div style="{{ widgetRowMetaStyle }}">{{ w.lastRun }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="{{ widgetCardStyle }}">
+              <div style="{{ widgetHeaderStyle }}"><span style="{{ widgetTitleStyle }}">Recent AI Conversations</span><span onClick="{{ navGo.aiChat }}" style="{{ widgetLinkStyle }}">Open chat →</span></div>
+              <sc-for list="{{ recentConversations }}" as="c" hint-placeholder-count="4">
+                <div style="{{ widgetRowStyle }}">
+                  <span style="{{ chatDotStyle }}"></span>
+                  <div style="min-width:0;flex:1;">
+                    <div style="{{ widgetRowTitleStyle }}">{{ c.title }}</div>
+                    <div style="{{ widgetRowMetaStyle }}">{{ c.time }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="{{ widgetCardStyle }}">
+              <div style="{{ widgetHeaderStyle }}"><span style="{{ widgetTitleStyle }}">Windows / Linux Updates</span></div>
+              <div style="{{ widgetRowStyle }}"><span style="{{ chatDotStyle }}"></span><div style="min-width:0;flex:1;"><div style="{{ widgetRowTitleStyle }}">4 servers pending Windows Updates</div><div style="{{ widgetRowMetaStyle }}">KB5034123 cumulative update</div></div></div>
+              <div style="{{ widgetRowStyle }}"><span style="{{ chatDotStyle }}"></span><div style="min-width:0;flex:1;"><div style="{{ widgetRowTitleStyle }}">3 servers pending Linux Updates</div><div style="{{ widgetRowMetaStyle }}">apt security patches available</div></div></div>
+              <div style="{{ widgetRowStyle }}"><span style="{{ dotRed }}"></span><div style="min-width:0;flex:1;"><div style="{{ widgetRowTitleStyle }}">1 failed backup job</div><div style="{{ widgetRowMetaStyle }}">BACKUP-01 · unreachable since 3h ago</div></div></div>
+              <div style="{{ widgetRowStyle }}"><span style="{{ dotYellow }}"></span><div style="min-width:0;flex:1;"><div style="{{ widgetRowTitleStyle }}">2 pending automation approvals</div><div style="{{ widgetRowMetaStyle }}">Requires admin sign-off</div></div></div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ============ INFRASTRUCTURE ============ -->
+      <sc-if value="{{ isInfrastructure }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Infrastructure">
+          <div style="{{ pageHeaderStyle }}">
+            <div>
+              <div style="{{ pageTitleStyle }}">Infrastructure</div>
+              <div style="{{ pageSubtitleStyle }}">All monitored infrastructure categories at a glance</div>
+            </div>
+          </div>
+
+          <div style="{{ infraCardGridStyle }}">
+            <sc-for list="{{ infraCategories }}" as="cat" hint-placeholder-count="7">
+              <div style="{{ cat.cardStyle }}">
+                <div style="{{ infraCardTopStyle }}">
+                  <div style="{{ cat.iconWrapStyle }}">{{ cat.icon }}</div>
+                  <div style="min-width:0;flex:1;">
+                    <div style="{{ infraCardNameStyle }}">{{ cat.name }}</div>
+                    <div style="{{ infraCardCountStyle }}">{{ cat.count }} nodes</div>
+                  </div>
+                  <span style="{{ cat.statusPillStyle }}">{{ cat.statusLabel }}</span>
+                </div>
+
+                <div style="{{ infraMetricRowStyle }}">
+                  <div style="{{ infraMetricColStyle }}">
+                    <div style="{{ infraMetricLabelStyle }}">CPU</div>
+                    <div style="{{ infraMetricTrackStyle }}"><div style="{{ cat.cpuBarStyle }}"></div></div>
+                    <div style="{{ infraMetricValStyle }}">{{ cat.cpu }}%</div>
+                  </div>
+                  <div style="{{ infraMetricColStyle }}">
+                    <div style="{{ infraMetricLabelStyle }}">Memory</div>
+                    <div style="{{ infraMetricTrackStyle }}"><div style="{{ cat.memBarStyle }}"></div></div>
+                    <div style="{{ infraMetricValStyle }}">{{ cat.mem }}%</div>
+                  </div>
+                  <div style="{{ infraMetricColStyle }}">
+                    <div style="{{ infraMetricLabelStyle }}">Disk</div>
+                    <div style="{{ infraMetricTrackStyle }}"><div style="{{ cat.diskBarStyle }}"></div></div>
+                    <div style="{{ infraMetricValStyle }}">{{ cat.disk }}%</div>
+                  </div>
+                </div>
+
+                <div style="{{ infraCardFooterStyle }}">
+                  <div style="{{ infraHealthDotsStyle }}">
+                    <span style="{{ cat.healthyDotStyle }}"></span><span style="{{ infraDotTextStyle }}">{{ cat.healthy }} healthy</span>
+                    <sc-if value="{{ cat.hasWarning }}" hint-placeholder-val="{{ false }}"><span style="{{ cat.warningDotStyle }}"></span><span style="{{ infraDotTextStyle }}">{{ cat.warning }} warning</span></sc-if>
+                    <sc-if value="{{ cat.hasCritical }}" hint-placeholder-val="{{ false }}"><span style="{{ cat.criticalDotStyle }}"></span><span style="{{ infraDotTextStyle }}">{{ cat.critical }} critical</span></sc-if>
+                  </div>
+                  <div style="{{ infraQuickActionsStyle }}">
+                    <button style="{{ infraQuickBtnStyle }}" style-hover="{{ infraQuickBtnHover }}" onClick="{{ cat.onOpen }}">Open</button>
+                    <button style="{{ infraQuickBtnGhostStyle }}" style-hover="{{ infraQuickBtnGhostHover }}">Restart</button>
+                  </div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ============ EMPTY / PLACEHOLDER PAGES ============ -->
+      <sc-if value="{{ isEmptyPage }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ emptyStateWrapStyle }}">
+          <div style="{{ emptyIconWrapStyle }}">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+          </div>
+          <div style="{{ emptyTitleStyle }}">{{ emptyPageName }}</div>
+          <div style="{{ emptySubtitleStyle }}">This module isn't wired up in the current preview build yet.</div>
+        </div>
+      </sc-if>
+
+    </div>
+
+    <!-- FOOTER -->
+    <div style="{{ footerStyle }}">
+      <span>AI Infrastructure Copilot v2.4.1</span>
+      <span style="{{ footerDotStyle }}"></span>
+      <span>Agent fleet: {{ totalServerCount }} connected</span>
+      <div style="flex:1;"></div>
+      <span>© 2026 Acme Corp</span>
+    </div>
+  </div>
+
+  <!-- ===================== AI SLIDE-OUT PANEL ===================== -->
+  <sc-if value="{{ aiPanelOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ aiPanelBackdropStyle }}" onClick="{{ toggleAiPanel }}"></div>
+    <div style="{{ aiPanelStyle }}">
+      {{ aiPanelContent }}
+    </div>
+  </sc-if>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}">
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      theme: 'dark',
+      page: 'dashboard',
+      sidebarCollapsed: false,
+      aiPanelOpen: false,
+      mobileNavOpen: false,
+      expandedNav: { infra: true, ad: false, virt: false, cloud: false },
+      selectedServerId: 'sql-prod-01',
+      serverTab: 'overview',
+      chatInput: '',
+      chatBusy: false,
+      pendingApproval: null,
+    };
+    this.data = buildInfraData();
+  }
+
+  go(page) { this.setState({ page, mobileNavOpen: false }); }
+  toggleSidebar() { this.setState(s => ({ sidebarCollapsed: !s.sidebarCollapsed })); }
+  toggleTheme() { this.setState(s => ({ theme: s.theme === 'dark' ? 'light' : 'dark' })); }
+  toggleAiPanel() { this.setState(s => ({ aiPanelOpen: !s.aiPanelOpen })); }
+  toggleNavGroup(key) { this.setState(s => ({ expandedNav: { ...s.expandedNav, [key]: !s.expandedNav[key] } })); }
+  selectServer(id) { this.setState({ selectedServerId: id, serverTab: 'overview', page: 'server-detail' }); }
+  setServerTab(tab) { this.setState({ serverTab: tab }); }
+
+  renderVals() {
+    const T = THEMES[this.state.theme];
+    const s = this.state;
+    const collapsed = s.sidebarCollapsed;
+    const sidebarW = collapsed ? 68 : 244;
+
+    const rootStyle = { fontFamily: "'Manrope', sans-serif", background: T.bg, color: T.textPrimary, minHeight: '100vh', width: '100%', display: 'flex' };
+
+    const sidebarStyle = {
+      width: sidebarW + 'px', minWidth: sidebarW + 'px', height: '100vh', position: 'sticky', top: 0,
+      background: T.sidebarBg, borderRight: '1px solid ' + T.border, display: 'flex', flexDirection: 'column',
+      transition: 'width .18s ease', overflow: 'hidden', flexShrink: 0,
+    };
+    const sidebarHeaderStyle = { display: 'flex', alignItems: 'center', gap: '10px', padding: '16px 14px', borderBottom: '1px solid ' + T.border, minHeight: '57px' };
+    const logoMarkStyle = { width: '30px', height: '30px', borderRadius: '8px', background: 'linear-gradient(135deg,' + T.accent + ',#7c5cff)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 800, flexShrink: 0, letterSpacing: '-0.02em' };
+    const collapseBtnStyle = { marginLeft: 'auto', width: '24px', height: '24px', borderRadius: '6px', border: 'none', background: 'transparent', color: T.textTertiary, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 };
+    const collapseBtnHover = { background: T.surfaceHover, color: T.textPrimary };
+
+    const navLabelStyle = 'font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    const navRowBase = { display: 'flex', alignItems: 'center', gap: '11px', padding: collapsed ? '9px 0' : '9px 11px', borderRadius: '8px', cursor: 'pointer', marginBottom: '2px', justifyContent: collapsed ? 'center' : 'flex-start', color: T.textSecondary };
+    const navActive = { background: T.accentSoft, color: T.accent };
+    const mkNav = (page) => (s.page === page ? { ...navRowBase, ...navActive } : navRowBase);
+    const navRowStyle = { dashboard: mkNav('dashboard'), eventLog: mkNav('event-log'), powershell: mkNav('powershell'), automation: mkNav('automation'), alerts: mkNav('alerts'), reports: mkNav('reports'), settings: mkNav('settings'), aiChat: mkNav('ai-chat') };
+    const navRowHover = { background: T.surfaceHover };
+    const navGroupHeaderStyle = { ...navRowBase, color: T.textSecondary, fontWeight: 700 };
+    const navSubBase = { padding: collapsed ? '7px 0' : '7px 11px 7px 38px', borderRadius: '7px', cursor: 'pointer', marginBottom: '1px', fontSize: '12.5px', fontWeight: 600, color: T.textTertiary, textAlign: collapsed ? 'center' : 'left' };
+    const mkSub = (page) => (s.page === page ? { ...navSubBase, color: T.accent, background: T.accentSoft } : navSubBase);
+    const navSubRowStyle = { infrastructure: mkSub('infrastructure'), servers: mkSub('servers'), activeDirectory: mkSub('active-directory'), groupPolicy: mkSub('group-policy'), dns: mkSub('dns'), dhcp: mkSub('dhcp'), vmware: mkSub('vmware'), hyperv: mkSub('hyperv'), aws: mkSub('aws'), azure: mkSub('azure'), gcp: mkSub('gcp') };
+    const navDividerStyle = { height: '1px', background: T.border, margin: '10px 4px' };
+    const navBadgeStyle = { fontSize: '10.5px', fontWeight: 800, color: T.red, background: T.redSoft, borderRadius: '999px', padding: '1px 7px', minWidth: '18px', textAlign: 'center' };
+    const chevronRotateStyle = (open) => ({ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform .15s ease', flexShrink: 0 });
+
+    const sidebarFooterStyle = { display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 14px', borderTop: '1px solid ' + T.border };
+    const userAvatarStyle = { width: '28px', height: '28px', borderRadius: '999px', background: T.accentSoft, color: T.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 800, flexShrink: 0 };
+
+    const mainColStyle = { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: '100vh' };
+    const topbarStyle = { height: '57px', minHeight: '57px', display: 'flex', alignItems: 'center', gap: '10px', padding: '0 18px', borderBottom: '1px solid ' + T.border, background: T.bgSubtle, position: 'sticky', top: 0, zIndex: 20 };
+    const orgSwitcherStyle = { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: T.textPrimary, padding: '6px 10px', borderRadius: '7px', cursor: 'pointer', background: T.surface, border: '1px solid ' + T.border, flexShrink: 0 };
+    const searchBarStyle = { display: 'flex', alignItems: 'center', gap: '8px', background: T.surface, border: '1px solid ' + T.border, borderRadius: '8px', padding: '7px 12px', width: '340px', cursor: 'pointer' };
+    const kbdStyle = { marginLeft: 'auto', fontSize: '10.5px', color: T.textTertiary, background: T.surfaceAlt, border: '1px solid ' + T.border, borderRadius: '4px', padding: '1px 5px', fontFamily: "'JetBrains Mono', monospace" };
+    const serverStatusPillStyle = { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12.5px', fontWeight: 700, color: T.green, background: T.greenSoft, border: '1px solid ' + T.greenBorder, borderRadius: '999px', padding: '5px 12px' };
+    const pulseDotStyle = { width: '7px', height: '7px', borderRadius: '999px', background: T.green, display: 'inline-block', animation: 'aicPulse 2s ease-in-out infinite' };
+    const iconBtnStyle = { width: '34px', height: '34px', borderRadius: '8px', border: '1px solid transparent', background: 'transparent', color: T.textSecondary, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' };
+    const iconBtnHover = { background: T.surfaceHover, color: T.textPrimary };
+    const notifDotStyle = { position: 'absolute', top: '7px', right: '7px', width: '7px', height: '7px', borderRadius: '999px', background: T.red, border: '2px solid ' + T.bgSubtle };
+    const topbarDividerStyle = { width: '1px', height: '24px', background: T.border, margin: '0 2px' };
+    const aiPanelBtnStyle = { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12.5px', fontWeight: 700, color: '#fff', background: 'linear-gradient(135deg,' + T.accent + ',#7c5cff)', border: 'none', borderRadius: '8px', padding: '8px 14px', cursor: 'pointer' };
+    const aiPanelBtnHover = { filter: 'brightness(1.08)' };
+    const userChipStyle = { width: '32px', height: '32px', borderRadius: '999px', background: T.accentSoft, color: T.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11.5px', fontWeight: 800, cursor: 'pointer', flexShrink: 0 };
+
+    const pageWrapStyle = { flex: 1, padding: '24px', overflow: 'auto' };
+    const footerStyle = { display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 22px', borderTop: '1px solid ' + T.border, fontSize: '11.5px', color: T.textTertiary, background: T.bgSubtle };
+    const footerDotStyle = { width: '3px', height: '3px', borderRadius: '999px', background: T.textTertiary };
+
+    const aiPanelBackdropStyle = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 40 };
+    const aiPanelStyle = { position: 'fixed', top: 0, right: 0, height: '100vh', width: '420px', maxWidth: '92vw', background: T.surface, borderLeft: '1px solid ' + T.border, boxShadow: T.shadow, zIndex: 41, display: 'flex', flexDirection: 'column', animation: 'aicFadeUp .2s ease' };
+
+    const servers = this.data.servers;
+    const healthyServerCount = servers.filter(x => x.health === 'healthy').length;
+    const openAlertCount = this.data.alerts.filter(a => a.status !== 'resolved').length;
+
+    const navGo = {
+      dashboard: () => this.go('dashboard'), infrastructure: () => this.go('infrastructure'), servers: () => this.go('servers'),
+      activeDirectory: () => this.go('active-directory'), groupPolicy: () => this.go('empty:Group Policy'), dns: () => this.go('empty:DNS'), dhcp: () => this.go('empty:DHCP'),
+      vmware: () => this.go('empty:VMware'), hyperv: () => this.go('empty:Hyper-V'), aws: () => this.go('empty:AWS'), azure: () => this.go('empty:Azure'), gcp: () => this.go('empty:GCP'),
+      eventLog: () => this.go('event-log'), powershell: () => this.go('powershell'), automation: () => this.go('automation'), alerts: () => this.go('alerts'),
+      reports: () => this.go('empty:Reports'), settings: () => this.go('empty:Settings'), aiChat: () => this.go('ai-chat'),
+    };
+
+    return {
+      theme: T, isDark: T.name === 'dark', isLight: T.name === 'light',
+      rootStyle, sidebarStyle, sidebarHeaderStyle, logoMarkStyle, collapseBtnStyle, collapseBtnHover,
+      notCollapsed: !collapsed, isCollapsed: collapsed,
+      collapseChevronPoints: collapsed ? '9 6 15 12 9 18' : '15 6 9 12 15 18',
+      navLabelStyle, navRowStyle, navRowHover, navGroupHeaderStyle, navSubRowStyle, navDividerStyle, navBadgeStyle,
+      infraExpanded: this.state.expandedNav.infra, virtExpanded: this.state.expandedNav.virt, cloudExpanded: this.state.expandedNav.cloud,
+      chevronRotateStyle: { infra: chevronRotateStyle(this.state.expandedNav.infra), virt: chevronRotateStyle(this.state.expandedNav.virt), cloud: chevronRotateStyle(this.state.expandedNav.cloud) },
+      toggleInfraGroup: () => this.toggleNavGroup('infra'), toggleVirtGroup: () => this.toggleNavGroup('virt'), toggleCloudGroup: () => this.toggleNavGroup('cloud'),
+      navGo,
+      sidebarFooterStyle, userAvatarStyle,
+      toggleSidebar: () => this.toggleSidebar(), toggleTheme: () => this.toggleTheme(), toggleAiPanel: () => this.toggleAiPanel(),
+      mainColStyle, topbarStyle, orgSwitcherStyle, searchBarStyle, kbdStyle, serverStatusPillStyle, pulseDotStyle,
+      iconBtnStyle, iconBtnHover, notifDotStyle, topbarDividerStyle, aiPanelBtnStyle, aiPanelBtnHover, userChipStyle,
+      healthyServerCount, totalServerCount: servers.length, openAlertCount,
+      pageWrapStyle, footerStyle, footerDotStyle,
+      aiPanelOpen: this.state.aiPanelOpen, aiPanelBackdropStyle, aiPanelStyle,
+      ...this.dashboardVals(T),
+      ...this.infrastructureVals(T),
+      pageContent: null,
+      aiPanelContent: this.renderAiPanel(T),
+    };
+  }
+
+  infrastructureVals(T) {
+    const page = this.state.page;
+    const servers = this.data.servers;
+    const winServers = servers.filter(x => x.kind === 'windows');
+    const linServers = servers.filter(x => x.kind === 'linux');
+    const avg = (arr, key) => arr.length ? Math.round(arr.reduce((a,x)=>a+x[key],0)/arr.length) : 0;
+    const cnt = (arr, h) => arr.filter(x => x.health === h).length;
+
+    const mkIcon = (paths, color) => React.createElement('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }, paths);
+    const cardStyle = { background: T.surface, border: '1px solid ' + T.border, borderRadius: '12px', padding: '16px' };
+    const iconWrap = (bg, fg) => ({ width: '38px', height: '38px', borderRadius: '9px', background: bg, color: fg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 });
+    const statusPill = (label, color, bg, border) => ({ fontSize: '11px', fontWeight: 700, color, background: bg, border: '1px solid ' + border, borderRadius: '999px', padding: '3px 9px', flexShrink: 0 });
+    const mkBar = (pct, color) => ({ height: '100%', width: pct + '%', background: color, borderRadius: '999px' });
+    const barColor = (pct) => pct >= 85 ? T.red : pct >= 65 ? T.yellow : T.green;
+    const dot = (color) => ({ width: '7px', height: '7px', borderRadius: '999px', background: color, display: 'inline-block' });
+
+    const catDefs = [
+      { key: 'windows', name: 'Windows Servers', list: winServers,
+        icon: mkIcon([React.createElement('rect',{key:1,x:3,y:4,width:8,height:8}),React.createElement('rect',{key:2,x:13,y:4,width:8,height:8}),React.createElement('rect',{key:3,x:3,y:14,width:8,height:8}),React.createElement('rect',{key:4,x:13,y:14,width:8,height:8})], T.accent), bg: T.accentSoft, color: T.accent },
+      { key: 'linux', name: 'Linux Servers', list: linServers,
+        icon: mkIcon([React.createElement('circle',{key:1,cx:12,cy:12,r:9}),React.createElement('path',{key:2,d:'M8 15s1.5 2 4 2 4-2 4-2'})], T.orange), bg: T.orangeSoft, color: T.orange },
+      { key: 'cloud', name: 'Cloud (AWS / Azure / GCP)', list: [{cpu:38,ram:52,disk:44,health:'healthy'},{cpu:29,ram:47,disk:33,health:'healthy'},{cpu:61,ram:70,disk:58,health:'warning'}],
+        icon: mkIcon([React.createElement('path',{key:1,d:'M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z'})], T.accent), bg: T.accentSoft, color: T.accent },
+      { key: 'vmware', name: 'VMware vSphere', list: [{cpu:55,ram:66,disk:60,health:'healthy'},{cpu:71,ram:80,disk:74,health:'warning'},{cpu:40,ram:50,disk:48,health:'healthy'},{cpu:22,ram:35,disk:30,health:'healthy'}],
+        icon: mkIcon([React.createElement('polygon',{key:1,points:'12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2'})], T.green), bg: T.greenSoft, color: T.green },
+      { key: 'hyperv', name: 'Hyper-V Hosts', list: [{cpu:33,ram:44,disk:39,health:'healthy'},{cpu:48,ram:58,disk:50,health:'healthy'}],
+        icon: mkIcon([React.createElement('rect',{key:1,x:2,y:3,width:20,height:14,rx:2}),React.createElement('line',{key:2,x1:8,y1:21,x2:16,y2:21}),React.createElement('line',{key:3,x1:12,y1:17,x2:12,y2:21})], T.accent), bg: T.accentSoft, color: T.accent },
+      { key: 'network', name: 'Network Devices', list: [{cpu:18,ram:25,disk:0,health:'healthy'},{cpu:24,ram:30,disk:0,health:'healthy'},{cpu:52,ram:40,disk:0,health:'warning'}],
+        icon: mkIcon([React.createElement('rect',{key:1,x:4,y:11,width:16,height:6,rx:1}),React.createElement('line',{key:2,x1:8,y1:17,x2:8,y2:20}),React.createElement('line',{key:3,x1:16,y1:17,x2:16,y2:20}),React.createElement('line',{key:4,x1:8,y1:8,x2:8,y2:11}),React.createElement('line',{key:5,x1:16,y1:8,x2:16,y2:11})], T.gray), bg: T.graySoft, color: T.gray },
+      { key: 'storage', name: 'Storage Arrays', list: [{cpu:12,ram:20,disk:78,health:'warning'},{cpu:9,ram:15,disk:62,health:'healthy'}],
+        icon: mkIcon([React.createElement('ellipse',{key:1,cx:12,cy:5,rx:9,ry:3}),React.createElement('path',{key:2,d:'M21 12c0 1.66-4 3-9 3s-9-1.34-9-3'}),React.createElement('path',{key:3,d:'M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5'})], T.yellow), bg: T.yellowSoft, color: T.yellow },
+    ];
+
+    const infraCategories = catDefs.map(d => {
+      const cpu = avg(d.list, 'cpu'), mem = avg(d.list, 'ram'), disk = avg(d.list, 'disk');
+      const healthy = cnt(d.list, 'healthy'), warning = cnt(d.list, 'warning'), critical = cnt(d.list, 'critical');
+      const overall = critical > 0 ? { label: 'Critical', color: T.red, bg: T.redSoft, border: T.redBorder } : warning > 0 ? { label: 'Warning', color: T.yellow, bg: T.yellowSoft, border: T.yellowBorder } : { label: 'Healthy', color: T.green, bg: T.greenSoft, border: T.greenBorder };
+      return {
+        name: d.name, count: d.list.length, icon: d.icon, iconWrapStyle: iconWrap(d.bg, d.color), cardStyle,
+        statusLabel: overall.label, statusPillStyle: statusPill(overall.label, overall.color, overall.bg, overall.border),
+        cpu, mem, disk, cpuBarStyle: mkBar(cpu, barColor(cpu)), memBarStyle: mkBar(mem, barColor(mem)), diskBarStyle: mkBar(disk, barColor(disk)),
+        healthy, warning, critical, hasWarning: warning > 0, hasCritical: critical > 0,
+        healthyDotStyle: dot(T.green), warningDotStyle: dot(T.yellow), criticalDotStyle: dot(T.red),
+        onOpen: d.key === 'windows' || d.key === 'linux' ? () => this.go('servers') : () => this.go('empty:' + d.name),
+      };
+    });
+
+    const infraCardGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px' };
+    const infraCardTopStyle = { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' };
+    const infraCardNameStyle = { fontSize: '14.5px', fontWeight: 700, color: T.textPrimary };
+    const infraCardCountStyle = { fontSize: '11.5px', color: T.textTertiary, marginTop: '1px' };
+    const infraMetricRowStyle = { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '14px' };
+    const infraMetricColStyle = { display: 'flex', flexDirection: 'column', gap: '5px' };
+    const infraMetricLabelStyle = { fontSize: '10.5px', fontWeight: 700, color: T.textTertiary, textTransform: 'uppercase', letterSpacing: '0.04em' };
+    const infraMetricTrackStyle = { height: '6px', borderRadius: '999px', background: T.surfaceAlt, overflow: 'hidden' };
+    const infraMetricValStyle = { fontSize: '12px', fontWeight: 700, color: T.textPrimary };
+    const infraCardFooterStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '12px', borderTop: '1px solid ' + T.border, gap: '10px', flexWrap: 'wrap' };
+    const infraHealthDotsStyle = { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' };
+    const infraDotTextStyle = { fontSize: '11.5px', color: T.textSecondary, marginRight: '6px' };
+    const infraQuickActionsStyle = { display: 'flex', gap: '8px', flexShrink: 0 };
+    const infraQuickBtnStyle = { fontSize: '12px', fontWeight: 700, color: '#fff', background: T.accent, border: 'none', borderRadius: '7px', padding: '6px 12px', cursor: 'pointer' };
+    const infraQuickBtnHover = { background: T.accentHover };
+    const infraQuickBtnGhostStyle = { fontSize: '12px', fontWeight: 700, color: T.textSecondary, background: 'transparent', border: '1px solid ' + T.border, borderRadius: '7px', padding: '6px 12px', cursor: 'pointer' };
+    const infraQuickBtnGhostHover = { background: T.surfaceHover, color: T.textPrimary };
+
+    return {
+      isInfrastructure: page === 'infrastructure',
+      infraCardGridStyle, infraCategories, infraCardTopStyle, infraCardNameStyle, infraCardCountStyle,
+      infraMetricRowStyle, infraMetricColStyle, infraMetricLabelStyle, infraMetricTrackStyle, infraMetricValStyle,
+      infraCardFooterStyle, infraHealthDotsStyle, infraDotTextStyle, infraQuickActionsStyle, infraQuickBtnStyle, infraQuickBtnHover, infraQuickBtnGhostStyle, infraQuickBtnGhostHover,
+    };
+  }
+
+  dashboardVals(T) {
+    const s = this.state;
+    const page = s.page;
+    const servers = this.data.servers;
+    const alerts = this.data.alerts;
+
+    const pageHeaderStyle = { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
+    const pageTitleStyle = { fontSize: '22px', fontWeight: 800, letterSpacing: '-0.01em', color: T.textPrimary };
+    const pageSubtitleStyle = { fontSize: '13px', color: T.textSecondary, marginTop: '3px' };
+    const pageHeaderActionsStyle = { display: 'flex', alignItems: 'center', gap: '10px' };
+    const liveBadgeStyle = { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12px', fontWeight: 700, color: T.green, background: T.greenSoft, border: '1px solid ' + T.greenBorder, borderRadius: '999px', padding: '5px 12px' };
+    const pulseDotStyle = { width: '7px', height: '7px', borderRadius: '999px', background: T.green, display: 'inline-block', animation: 'aicPulse 2s ease-in-out infinite' };
+
+    const cardBase = { background: T.surface, border: '1px solid ' + T.border, borderRadius: '12px', padding: '16px 16px 14px' };
+    const iconWrap = (bg, fg) => ({ width: '30px', height: '30px', borderRadius: '8px', background: bg, color: fg, display: 'flex', alignItems: 'center', justifyContent: 'center' });
+    const svgIcon = (path) => path;
+
+    const cpuAvg = Math.round(servers.reduce((a, x) => a + x.cpu, 0) / servers.length);
+    const ramAvg = Math.round(servers.reduce((a, x) => a + x.ram, 0) / servers.length);
+    const diskAvg = Math.round(servers.reduce((a, x) => a + x.disk, 0) / servers.length);
+    const healthyCount = servers.filter(x => x.health === 'healthy').length;
+    const criticalCount = servers.filter(x => x.health === 'critical').length;
+    const securityAlertCount = alerts.filter(a => a.title.toLowerCase().includes('login') || a.title.toLowerCase().includes('unreachable')).length;
+
+    const mkIcon = (paths, color) => React.createElement('svg', { width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }, paths);
+
+    const statDefs = [
+      { label: 'Total Servers', value: String(servers.length), delta: 'across 3 environments', color: T.accent, bg: T.accentSoft,
+        icon: mkIcon([React.createElement('rect', { key: 1, x: 3, y: 4, width: 18, height: 6, rx: 1.5 }), React.createElement('rect', { key: 2, x: 3, y: 14, width: 18, height: 6, rx: 1.5 })], T.accent) },
+      { label: 'Healthy Servers', value: String(healthyCount), delta: `${Math.round(healthyCount/servers.length*100)}% of fleet`, color: T.green, bg: T.greenSoft,
+        icon: mkIcon([React.createElement('path', { key: 1, d: 'M20 6 9 17l-5-5' })], T.green) },
+      { label: 'Critical Servers', value: String(criticalCount), delta: 'needs attention', color: T.red, bg: T.redSoft,
+        icon: mkIcon([React.createElement('path', { key: 1, d: 'M12 9v4' }), React.createElement('path', { key: 2, d: 'M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z' }), React.createElement('path', { key: 3, d: 'M12 17h.01' })], T.red) },
+      { label: 'CPU Usage (avg)', value: cpuAvg + '%', delta: 'fleet average', color: T.accent, bg: T.accentSoft,
+        icon: mkIcon([React.createElement('rect', { key: 1, x: 4, y: 4, width: 16, height: 16, rx: 2 }), React.createElement('rect', { key: 2, x: 9, y: 9, width: 6, height: 6 })], T.accent) },
+      { label: 'RAM Usage (avg)', value: ramAvg + '%', delta: 'fleet average', color: T.orange, bg: T.orangeSoft,
+        icon: mkIcon([React.createElement('rect', { key: 1, x: 3, y: 6, width: 18, height: 12, rx: 2 }), React.createElement('line', { key: 2, x1: 7, y1: 10, x2: 7, y2: 14 }), React.createElement('line', { key: 3, x1: 11, y1: 10, x2: 11, y2: 14 })], T.orange) },
+      { label: 'Disk Usage (avg)', value: diskAvg + '%', delta: 'fleet average', color: T.yellow, bg: T.yellowSoft,
+        icon: mkIcon([React.createElement('ellipse', { key: 1, cx: 12, cy: 5, rx: 9, ry: 3 }), React.createElement('path', { key: 2, d: 'M21 12c0 1.66-4 3-9 3s-9-1.34-9-3' }), React.createElement('path', { key: 3, d: 'M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5' })], T.yellow) },
+      { label: 'Security Alerts', value: String(securityAlertCount), delta: 'last 24 hours', color: T.red, bg: T.redSoft,
+        icon: mkIcon([React.createElement('path', { key: 1, d: 'M12 2 3 6v6c0 5.5 4 9 9 10 5-1 9-4.5 9-10V6z' })], T.red) },
+      { label: 'Certificate Expiry', value: '9 days', delta: 'portal.acmecorp.io', color: T.yellow, bg: T.yellowSoft,
+        icon: mkIcon([React.createElement('circle', { key: 1, cx: 12, cy: 12, r: 10 }), React.createElement('polyline', { key: 2, points: '12 6 12 12 16 14' })], T.yellow) },
+    ];
+    const statCards = statDefs.map(d => ({ label: d.label, value: d.value, delta: d.delta, icon: d.icon, iconWrapStyle: iconWrap(d.bg, d.color), cardStyle: cardBase, deltaStyle: { fontSize: '11.5px', color: T.textTertiary, marginTop: '2px' } }));
+    const statCardTopRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' };
+    const statLabelStyle = { fontSize: '12px', fontWeight: 600, color: T.textSecondary };
+    const statValueStyle = { fontSize: '25px', fontWeight: 800, color: T.textPrimary, letterSpacing: '-0.01em' };
+
+    const statGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(180px, 1fr))', gap: '12px', marginBottom: '20px' };
+    const chartGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '20px' };
+    const chartCardStyle = { background: T.surface, border: '1px solid ' + T.border, borderRadius: '12px', padding: '16px' };
+    const chartCardHeaderStyle = { marginBottom: '14px' };
+    const chartTitleStyle = { fontSize: '13px', fontWeight: 700, color: T.textPrimary };
+
+    const mkSpark = (values, color) => {
+      const w = 280, h = 74, max = Math.max(...values), min = Math.min(...values);
+      const pts = values.map((v, i) => `${(i/(values.length-1))*w},${h - ((v-min)/(max-min||1))*(h-10) - 4}`).join(' ');
+      const areaPts = `0,${h} ${pts} ${w},${h}`;
+      return React.createElement('svg', { width: '100%', height: h, viewBox: `0 0 ${w} ${h}`, preserveAspectRatio: 'none' },
+        React.createElement('polyline', { points: areaPts, fill: color + '22', stroke: 'none' }),
+        React.createElement('polyline', { points: pts, fill: 'none', stroke: color, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' })
+      );
+    };
+    const cpuSeries = [34,38,42,55,61,58,72,80,76,68,74,cpuAvg];
+    const memSeries = [48,50,52,55,60,63,65,62,64,66,68,ramAvg];
+    const netSeries = [120,180,260,310,220,340,410,380,300,260,290,330];
+    const cpuSparkline = mkSpark(cpuSeries, T.accent);
+    const memSparkline = mkSpark(memSeries, T.orange);
+    const netSparkline = mkSpark(netSeries, T.green);
+    const sparklineWrapStyle = { width: '100%' };
+
+    const healthBarsWrapStyle = { display: 'flex', flexDirection: 'column', gap: '10px' };
+    const healthRowStyle = { display: 'flex', alignItems: 'center', gap: '10px' };
+    const healthRowLabelStyle = { fontSize: '12px', color: T.textSecondary, width: '76px', flexShrink: 0 };
+    const healthRowCountStyle = { fontSize: '12px', fontWeight: 700, color: T.textPrimary, width: '24px', textAlign: 'right' };
+    const healthBarTrackStyle = { flex: 1, height: '8px', borderRadius: '999px', background: T.surfaceAlt, overflow: 'hidden' };
+    const mkBar = (pct, color) => ({ height: '100%', width: pct + '%', background: color, borderRadius: '999px' });
+    const healthCounts = { healthy: servers.filter(x=>x.health==='healthy').length, warning: servers.filter(x=>x.health==='warning').length, critical: servers.filter(x=>x.health==='critical').length, offline: servers.filter(x=>x.health==='offline').length };
+    const healthDistribution = [
+      { label: 'Healthy', count: healthCounts.healthy, barStyle: mkBar(healthCounts.healthy/servers.length*100, T.green) },
+      { label: 'Warning', count: healthCounts.warning, barStyle: mkBar(healthCounts.warning/servers.length*100, T.yellow) },
+      { label: 'Critical', count: healthCounts.critical, barStyle: mkBar(healthCounts.critical/servers.length*100, T.red) },
+      { label: 'Offline', count: healthCounts.offline, barStyle: mkBar(healthCounts.offline/servers.length*100, T.gray) },
+    ];
+    const winCount = servers.filter(x=>x.kind==='windows').length, linCount = servers.filter(x=>x.kind==='linux').length;
+    const osDistribution = [
+      { label: 'Windows Server', count: winCount, barStyle: mkBar(winCount/servers.length*100, T.accent) },
+      { label: 'Ubuntu Linux', count: linCount, barStyle: mkBar(linCount/servers.length*100, T.green) },
+    ];
+
+    const alertTimelineWrapStyle = { display: 'flex', alignItems: 'flex-end', gap: '10px', height: '110px', padding: '0 4px' };
+    const alertTimelineColStyle = { display: 'flex', flexDirection: 'column-reverse', alignItems: 'center', gap: '2px', flex: 1 };
+    const alertTimelineDayStyle = { fontSize: '10px', color: T.textTertiary, marginTop: '6px' };
+    const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    const critVals = [1,2,1,3,2,1,3], warnVals = [3,4,2,5,3,2,4];
+    const alertTimeline = days.map((d,i) => ({ day: d,
+      criticalBarStyle: { width: '14px', height: (critVals[i]*9)+'px', background: T.red, borderRadius: '3px 3px 0 0' },
+      warningBarStyle: { width: '14px', height: (warnVals[i]*7)+'px', background: T.yellow, borderRadius: '3px 3px 0 0' } }));
+
+    const widgetGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px' };
+    const widgetCardStyle = { background: T.surface, border: '1px solid ' + T.border, borderRadius: '12px', padding: '14px 16px' };
+    const widgetHeaderStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' };
+    const widgetTitleStyle = { fontSize: '13px', fontWeight: 700, color: T.textPrimary };
+    const widgetLinkStyle = { fontSize: '12px', fontWeight: 600, color: T.accent, cursor: 'pointer' };
+    const widgetRowStyle = { display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '8px 0', borderTop: '1px solid ' + T.border };
+    const widgetRowTitleStyle = { fontSize: '12.5px', fontWeight: 600, color: T.textPrimary, lineHeight: 1.3 };
+    const widgetRowMetaStyle = { fontSize: '11px', color: T.textTertiary, marginTop: '2px' };
+    const dotFor = (sev) => ({ width: '7px', height: '7px', borderRadius: '999px', marginTop: '4px', flexShrink: 0, background: sev === 'critical' ? T.red : sev === 'warning' ? T.yellow : T.accent });
+    const dashAlerts = alerts.slice(0,4).map(a => ({ title: a.title, server: a.server, time: a.time, dotStyle: dotFor(a.severity) }));
+    const dashAutomations = this.data.automations.slice(0,4).map(w => ({ name: w.name, lastRun: w.lastRun + ' · ' + w.result, dotStyle: { width: '7px', height: '7px', borderRadius: '999px', marginTop: '4px', flexShrink: 0, background: w.result === 'success' ? T.green : T.red } }));
+    const chatDotStyle = { width: '7px', height: '7px', borderRadius: '999px', marginTop: '4px', flexShrink: 0, background: T.accent };
+    const dotRed = { width: '7px', height: '7px', borderRadius: '999px', marginTop: '4px', flexShrink: 0, background: T.red };
+    const dotYellow = { width: '7px', height: '7px', borderRadius: '999px', marginTop: '4px', flexShrink: 0, background: T.yellow };
+
+    const emptyStateWrapStyle = { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '90px 20px', color: T.textSecondary };
+    const emptyIconWrapStyle = { width: '52px', height: '52px', borderRadius: '999px', background: T.surfaceAlt, color: T.textTertiary, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '14px' };
+    const emptyTitleStyle = { fontSize: '15px', fontWeight: 700, color: T.textPrimary, marginBottom: '4px' };
+    const emptySubtitleStyle = { fontSize: '13px', color: T.textTertiary };
+    const emptyPageName = page.startsWith('empty:') ? page.slice(6) : '';
+
+    return {
+      isDashboard: page === 'dashboard', isEmptyPage: page.startsWith('empty:'), emptyPageName, emptyStateWrapStyle, emptyIconWrapStyle, emptyTitleStyle, emptySubtitleStyle,
+      pageHeaderStyle, pageTitleStyle, pageSubtitleStyle, pageHeaderActionsStyle, liveBadgeStyle,
+      statGridStyle, statCards, statCardTopRowStyle, statLabelStyle, statValueStyle,
+      chartGridStyle, chartCardStyle, chartCardHeaderStyle, chartTitleStyle, sparklineWrapStyle, cpuSparkline, memSparkline, netSparkline,
+      healthBarsWrapStyle, healthRowStyle, healthRowLabelStyle, healthRowCountStyle, healthBarTrackStyle, healthDistribution, osDistribution,
+      alertTimelineWrapStyle, alertTimelineColStyle, alertTimelineDayStyle, alertTimeline,
+      widgetGridStyle, widgetCardStyle, widgetHeaderStyle, widgetTitleStyle, widgetLinkStyle, widgetRowStyle, widgetRowTitleStyle, widgetRowMetaStyle,
+      dashAlerts, dashAutomations, recentConversations: this.data.recentConversations, chatDotStyle, dotRed, dotYellow,
+    };
+  }
+
+  renderAiPanel(T) { return null; }
+}
+
+</script>
+<script>
+(async () => {
+  if (!document.title || !document.title.trim()) document.title = "AI Infrastructure Copilot";
+  // Prepend so page-supplied @page / break rules (deck-stage's margin:0,
+  // author CSS) keep source-order precedence over the baseline.
+  const baseCss = document.createElement('style');
+  baseCss.textContent = "@media print {\n  figure, table { break-inside: avoid; }\n  *, *::before, *::after {\n    print-color-adjust: exact; -webkit-print-color-adjust: exact;\n    backdrop-filter: none !important; -webkit-backdrop-filter: none !important;\n    animation-delay: -99s !important; animation-duration: .001s !important;\n    animation-iteration-count: 1 !important; animation-fill-mode: both !important;\n    animation-play-state: running !important; transition-duration: 0s !important;\n  }\n}";
+  document.head.prepend(baseCss);
+  if (document.readyState === 'loading') {
+    await new Promise((r) => document.addEventListener('DOMContentLoaded', r, { once: true }));
+  }
+  let ds = document.querySelector('deck-stage');
+  // whenDefined never resolves when nothing registers the element, so only
+  // await it when a <deck-stage> tag exists (and race a timeout regardless).
+  if (ds && !customElements.get('deck-stage')) {
+    try {
+      await Promise.race([
+        customElements.whenDefined('deck-stage'),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
+    } catch (e) {}
+    ds = document.querySelector('deck-stage');
+  }
+  // dc-runtime assigns window.DCLogic at init and mounts into #dc-root on
+  // DOMContentLoaded; settle on that subtree so React has rendered before
+  // print(). Non-DC pages fall through to weighing body.
+  const isDc = !ds && 'DCLogic' in window;
+  const settleRoot = ds || (isDc ? document.getElementById('dc-root') : null) || document.body;
+  if (settleRoot) {
+    // Weigh only content children — skip script/style/template so inline
+    // Babel/CSS doesn't register as stable "content" before the framework
+    // has mounted anything.
+    const MEDIA = 'img,svg,canvas,video,picture,iframe,embed,object';
+    const weigh = () => {
+      let text = 0, media = 0;
+      for (const c of settleRoot.children) {
+        const t = c.tagName;
+        if (t === 'SCRIPT' || t === 'STYLE' || t === 'TEMPLATE') continue;
+        text += (c.textContent || '').trim().length;
+        media += c.querySelectorAll(MEDIA).length + (c.matches(MEDIA) ? 1 : 0);
+      }
+      return text + media * 100;
+    };
+    // "Non-zero and stable" alone is not sufficient to mean rendered: generic
+    // body can carry a static shell while async main content is pending, and
+    // #dc-root can carry the root DC's static text while child refs are still
+    // .sc-placeholder boxes. Gate generic on readyState 'complete', and never
+    // accept stability while a dc-runtime placeholder is present.
+    const isGeneric = settleRoot === document.body;
+    const deadline = Date.now() + 15000;
+    let last = -1, stable = 0;
+    while (Date.now() < deadline) {
+      const n = weigh();
+      const ready =
+        (!isGeneric || document.readyState === 'complete') &&
+        !settleRoot.querySelector('.sc-placeholder');
+      if (n > 0 && n === last && ready) { if (++stable >= 2) break; } else { stable = 0; }
+      last = n;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  // Project support.js may predate runtime default-seeding; push via bridge.
+  if (isDc && window.__dcSetProps && window.__dcRootName) {
+    try {
+      const dpEl = document.querySelector('script[data-dc-script]');
+      const meta = JSON.parse((dpEl && dpEl.getAttribute('data-props')) || '{}');
+      const bag = {};
+      for (const k in meta)
+        if (k[0] !== '$' && meta[k] && meta[k].default !== undefined)
+          bag[k] = meta[k].default;
+      if (Object.keys(bag).length) {
+        window.__dcSetProps(window.__dcRootName(), bag);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    } catch (e) {}
+  }
+  // Reveal content gated on scroll or visibility before printing. Lazy <img>,
+  // IntersectionObserver fade-ins, and collapsed <details> don't render while
+  // off-screen, so a long page would print with them blank or closed. Open
+  // every <details>, force native-lazy images eager, and scroll the document
+  // through its full height to trip lazy-load + IO; then wait (bounded) for the
+  // newly-triggered images. Inert for deck-stage (slides aren't scroll-gated).
+  try {
+    for (const d of document.querySelectorAll('details')) d.open = true;
+    for (const img of document.querySelectorAll('img[loading="lazy"]'))
+      img.loading = 'eager';
+    const scroller = document.scrollingElement || document.documentElement;
+    const full = Math.max(scroller.scrollHeight, document.body.scrollHeight);
+    const step = window.innerHeight || 800;
+    for (let y = 0; y <= full; y += step) {
+      window.scrollTo(0, y);
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    window.scrollTo(0, 0);
+    await Promise.race([
+      Promise.all(
+        [...document.images].map((img) =>
+          img.complete
+            ? null
+            : new Promise((res) => {
+                img.addEventListener('load', res, { once: true });
+                img.addEventListener('error', res, { once: true });
+              })
+        )
+      ),
+      new Promise((r) => setTimeout(r, 4000)),
+    ]);
+  } catch (e) {}
+  try { await document.fonts.ready; } catch (e) {}
+  // Jump every animation to its end state so print() never captures a slide
+  // mid-entrance. Ordering matters: the 0s-transition style must be live
+  // BEFORE data-deck-active is set so attribute-keyed transitions don't
+  // start a (now-0s) run from the pre-active base.
+  const st = document.createElement('style');
+  st.textContent = '*,*::before,*::after{animation-delay:-99s !important;animation-duration:.001s !important;animation-iteration-count:1 !important;animation-fill-mode:both !important;animation-play-state:running !important;transition-duration:0s !important}';
+  document.head.appendChild(st);
+  for (const d of document.querySelectorAll('deck-stage')) {
+    for (const c of d.children) {
+      const t = c.tagName;
+      if (t === 'SCRIPT' || t === 'STYLE' || t === 'TEMPLATE') continue;
+      c.setAttribute('data-deck-active', '');
+    }
+  }
+  // Re-append deck-stage's @page last so no author @page can add a margin and
+  // spill each full-bleed slide onto two sheets. Backstop for old copies.
+  if (ds) {
+    let pg = document.getElementById('deck-stage-print-page');
+    if (!pg) {
+      pg = document.createElement('style');
+      pg.textContent = '@page{size:' + (+ds.getAttribute('width') || 1920) +
+        'px ' + (+ds.getAttribute('height') || 1080) + 'px;margin:0}';
+    }
+    document.body.appendChild(pg);
+  }
+  try {
+    const sweep = () => {
+      for (const a of document.getAnimations()) {
+        try { a.finish(); } catch (e) {
+          try { a.currentTime = (a.effect && a.effect.getComputedTiming().duration) || 0; a.pause(); } catch (e2) {}
+        }
+      }
+    };
+    sweep();
+    await new Promise((r) => requestAnimationFrame(r));
+    sweep();
+    await new Promise((r) => requestAnimationFrame(r));
+  } catch (e) {}
+  // A document that owns its print CSS (the doc-page starter injects the
+  // meta at runtime; hand-rolled print designs author it) gets no automatic
+  // page geometry and keeps its forced breaks: strip the injected default
+  // @page — write time cannot see a runtime-injected meta — skip the frame
+  // override below, and skip the fakepage-flattening further down. What
+  // still applies: the print baseline and break-hygiene defaults (no @page
+  // in either; low specificity, so the document's own print CSS wins) and
+  // the break-inside relaxation on >page elements (avoid on those cannot
+  // be honored whoever authored it).
+  var ownsPrint = !!document.querySelector('meta[name="omelette-owns-print" i]');
+  if (ownsPrint) {
+    var dst = document.querySelector('style[data-omelette-print-defaults]');
+    if (dst && dst.textContent) {
+      dst.textContent = dst.textContent.replace(/@page\b[^{}]*\{[^}]*\}/, '');
+    }
+  }
+  // Size the PDF page to the rendered design unless the file opted into
+  // standard paper via @page{size:letter|A4|…} or declared print ownership
+  // via the meta above. Decks own their own @page.
+  // Wrappers (body, …) lose padding+margin so the frame sits at (0,0); the
+  // frame itself loses only margin — its padding is INSIDE the measured
+  // rect and must stay, or content shifts and leaves a gap at bottom/right.
+  var __m = null;
+  try { __m = (() => {
+  var STAMP = true;
+  var docEl = document.documentElement;
+  var doc = { width: docEl.scrollWidth, height: docEl.scrollHeight };
+  // Name-presence check, case-insensitive — the same contract as the
+  // instant-PDF path's runtime check in deck-stage-export.ts. The name is
+  // a string literal here because that file interpolates this script into
+  // its print script, so importing a shared constant from it would be a
+  // cycle; measure.test.ts pins the literal so the two cannot drift apart
+  // silently.
+  var ownsPrint = !!document.querySelector('meta[name="omelette-owns-print" i]');
+
+  var ds = document.querySelector('deck-stage');
+  if (ds) {
+    var dw = Number(ds.getAttribute('width')) || 1920;
+    var dh = Number(ds.getAttribute('height')) || 1080;
+    var n = typeof ds.length === 'number' ? ds.length : ds.children.length;
+    var idx = typeof ds.index === 'number' ? ds.index : 0;
+    var frames = [];
+    for (var i = 0; i < n; i++) frames.push({ left: 0, top: 0, width: dw, height: dh });
+    return { kind: 'deck', source: 'declared', doc: doc, frames: frames,
+      authored: frames.map(function(){return{width:true,height:true}}),
+      deck: { width: dw, height: dh, slideCount: n, index: idx },
+      signals: { paperPage: false, pxPage: false, ownsPrint: ownsPrint } };
+  }
+
+  // Declared kind: a doc-page tag names the kind outright, so no signal
+  // heuristics run (like the deck branch above, signals report false —
+  // they describe inferred classifications only). The tag alone is not
+  // trusted: the element must have upgraded (shadowRoot present), so a
+  // leftover tag whose script was deleted falls through to the heuristics
+  // that handle plain markup.
+  var stageSx = window.scrollX || 0, stageSy = window.scrollY || 0;
+  var dp = document.querySelector('doc-page');
+  if (dp && dp.shadowRoot) {
+    // Crop to the sheet, not the host — the desk around it is screen-only
+    // chrome that must not land in PNG exports.
+    var sheet = dp.shadowRoot.querySelector('.sheet');
+    var sr = (sheet || dp).getBoundingClientRect();
+    return { kind: 'paper-doc', source: 'declared', doc: doc,
+      frames: [{ left: sr.left + stageSx, top: sr.top + stageSy,
+        width: sr.width, height: sr.height }],
+      authored: [{ width: false, height: false }],
+      signals: { paperPage: false, pxPage: false, ownsPrint: ownsPrint } };
+  }
+  var paperPage = false, pxPage = false;
+  var eachRule = function (fn) {
+    for (var s = 0; s < document.styleSheets.length; s++) {
+      var rs; try { rs = document.styleSheets[s].cssRules; } catch (e) { continue; }
+      for (var r = 0; r < rs.length; r++) {
+        fn(rs[r]);
+        if (rs[r].cssRules) for (var n = 0; n < rs[r].cssRules.length; n++) fn(rs[r].cssRules[n]);
+      }
+    }
+  };
+  eachRule(function (r) {
+    if (r.type !== 6) return;
+    var m = /\bsize\s*:\s*([^;}]+)/i.exec(r.cssText || '');
+    if (!m) return;
+    if (/\b(letter|a[3-5]|legal|ledger)\b/i.test(m[1])) paperPage = true;
+    if (/\d+(?:\.\d+)?px\b/i.test(m[1])) pxPage = true;
+  });
+  var signals = { paperPage: paperPage, pxPage: pxPage, ownsPrint: ownsPrint };
+
+  var pxVal = function (v) {
+    var m = /^(\d+(?:\.\d+)?)px$/.exec(v || ''); return m ? +m[1] : 0;
+  };
+  var authoredPx = function (el, prop) {
+    if (pxVal(el.style[prop])) return true;
+    var attr = el.getAttribute(prop);
+    if (attr && /^\d+$/.test(attr)) return true;
+    var hit = false;
+    eachRule(function (r) {
+      if (hit || r.type !== 1 || !r.style) return;
+      try { if (el.matches(r.selectorText) && pxVal(r.style[prop])) hit = true; } catch (e) {}
+    });
+    return hit;
+  };
+
+  var el = document.body, rootPxW = false;
+  for (;;) {
+    var kids = [];
+    for (var c = 0; c < el.children.length; c++) {
+      var t = el.children[c].tagName;
+      if (t !== 'SCRIPT' && t !== 'STYLE' && t !== 'TEMPLATE') kids.push(el.children[c]);
+    }
+    if (kids.length !== 1 || !(kids[0] instanceof HTMLElement)) break;
+    if (STAMP) el.setAttribute('data-om-frame-wrap', '');
+    el = kids[0];
+    rootPxW = authoredPx(el, 'width');
+    if (rootPxW) break;
+  }
+  if (!rootPxW) rootPxW = authoredPx(el, 'width');
+
+  // @page{size:letter} alone is a flowing doc; with a px-width root it's a
+  // fixed sheet pretending to be paper — fall through and size to render.
+  if (paperPage && !rootPxW) {
+    return { kind: 'paper-doc', source: 'inferred', doc: doc, signals: signals,
+      frames: [{ left: 0, top: 0, width: doc.width, height: doc.height }],
+      authored: [{ width: false, height: false }] };
+  }
+
+  var sx = window.scrollX || 0, sy = window.scrollY || 0;
+  var rectOf = function (e) {
+    var r = e.getBoundingClientRect();
+    var oy; try { oy = getComputedStyle(e).overflowY; } catch (err) {}
+    var h = oy === 'visible' ? Math.max(r.height, e.scrollHeight || 0) : r.height;
+    return { left: r.left + sx, top: r.top + sy, width: r.width, height: h };
+  };
+
+  // Multi-frame: off unless the page opts in via data-om-multi-frame on the
+  // stop element — the explicit opt-in is what guards against card grids
+  // and pricing tables that match the geometry but aren't separate
+  // canvases. Two ways to name the frames, explicit first:
+  // 1. Descendants marked data-om-frame-export (the social-frames starter
+  //    marks each asset frame; shells/panels around them are presentation,
+  //    so nesting is expected). Document order.
+  // 2. Fallback, no marked descendants: direct children with an authored px
+  //    width AND height (the original geometry heuristic).
+  // Frames may be different sizes (a gallery mixes 1080×1920 stories with
+  // 728×90 banners); data-om-frame-label rides along for export filenames.
+  if (el.hasAttribute('data-om-multi-frame')) {
+    var visOk = function (e) {
+      var cs; try { cs = getComputedStyle(e); } catch (err) { return false; }
+      return cs.display !== 'none' && cs.visibility !== 'hidden' && cs.position !== 'fixed';
+    };
+    // A frame's crop is its VISUAL box — never the scrollHeight-inflated
+    // rect that rectOf computes for page roots. Shadow-DOM hover controls
+    // (image-slot's Replace bar parks 29px below its host) and similar
+    // escaping UI contribute scrollable overflow to the frame, and the
+    // inflated height both squashes the nominal-size resize and drags
+    // content below the frame into the crop. Zoom-independent; bit every
+    // slot-bearing frame.
+    var frameRectOf = function (e) {
+      var r = e.getBoundingClientRect();
+      return { left: r.left + sx, top: r.top + sy, width: r.width, height: r.height };
+    };
+    var pushCand = function (list, e) {
+      if (!visOk(e)) return;
+      var rc = frameRectOf(e);
+      if (rc.width < 2 || rc.height < 2) return;
+      var lbl = e.getAttribute('data-om-frame-label');
+      if (lbl) rc.label = lbl;
+      list.push(rc);
+    };
+    var cands = [];
+    var marked = el.querySelectorAll('[data-om-frame-export]');
+    if (marked.length) {
+      for (var mk = 0; mk < marked.length; mk++) pushCand(cands, marked[mk]);
+    } else {
+      for (var k = 0; k < el.children.length; k++) {
+        var ch = el.children[k];
+        if (!authoredPx(ch, 'width') || !authoredPx(ch, 'height')) continue;
+        pushCand(cands, ch);
+      }
+    }
+    if (cands.length >= 2) {
+      return { kind: 'multi-frame', source: 'inferred', doc: doc, signals: signals,
+        frames: cands, authored: cands.map(function(){return{width:true,height:true}}) };
+    }
+  }
+
+  if (STAMP) el.setAttribute('data-om-frame', '');
+  return { kind: 'single-canvas', source: 'inferred', doc: doc, signals: signals,
+    frames: [rectOf(el)],
+    authored: [{ width: rootPxW, height: authoredPx(el, 'height') }] };
+})(); } catch (e) {}
+  var frame = null;
+  if (!ownsPrint && __m && __m.kind === 'single-canvas') {
+    var f = __m.frames && __m.frames[0];
+    if (f && f.width >= 200 && f.height >= 200) {
+      frame = f;
+      var fst = document.createElement('style');
+      fst.textContent = '@media print{@page{size:' + Math.ceil(f.width) + 'px ' +
+        Math.ceil(f.height) + 'px;margin:0}' +
+        'html,body,[data-om-frame-wrap]{padding:0!important;margin:0!important;background:none!important}' +
+        '[data-om-frame]{margin:0!important}}';
+      document.body.appendChild(fst);
+    }
+  }
+  // Relax break-inside on oversized elements. An element taller than a
+  // printable page can't honor break-inside: avoid — browsers either overflow
+  // it or push it whole to the next page, leaving a blank gap, then break it
+  // anyway at an arbitrary point. After the final layout (content revealed,
+  // animations jumped), find elements taller than a page that still compute
+  // break-inside: avoid and reset them to auto, so the browser breaks them at
+  // their children's boundaries instead (children keep their own avoid). PAGE_PX
+  // is a conservative portrait estimate at 96 CSS px/in — Letter/A4 usable
+  // height minus our 0.5in margins — so only clearly-oversized elements are
+  // touched and under-page elements still stay whole. Skipped for decks (slides
+  // are sized to the page) and for fixed-size canvases (frame set, or an author
+  // px-based @page) — runs as before for flowing docs on letter/A4.
+  try {
+    if (!ds && !frame && !(__m && __m.signals && __m.signals.pxPage)) {
+      const PAGE_PX = 1024;
+      // Our print defaults add a real @page margin only when the source has
+      // no @page of its own; computed style can't tell us (it reports screen
+      // media), so read the injected rule directly.
+      const defaults = document.querySelector('style[data-omelette-print-defaults]');
+      const pageInset = /@page\s*\{[^}]*margin/.test(defaults ? defaults.textContent || '' : '');
+      const SEL = 'section,article,figure,table,pre,blockquote,[class~="card" i],[class~="page" i],[class~="sheet" i]';
+      for (const el of document.body.querySelectorAll(SEL)) {
+        if (el instanceof HTMLElement && el.offsetHeight > PAGE_PX) {
+          el.setAttribute('data-om-oversized', '');
+          // Fake-paged docs simulate sheets with over-tall break-after:page
+          // boxes; honoring the break spills half-blank pages and ends a
+          // colored box mid-sheet. Flow them, and (only when we own the page
+          // inset) drop the redundant padding/background via the rule below.
+          const cs = getComputedStyle(el);
+          // An owns-print doc's forced breaks are intentional sheet
+          // boundaries, never fake-paged simulation — don't strip them.
+          // The break-inside relaxation above still applies: avoid on a
+          // >page element is impossible to honor whoever authored it.
+          if (
+            !ownsPrint &&
+            (cs.breakAfter === 'page' || cs.pageBreakAfter === 'always')
+          ) {
+            el.setAttribute('data-om-fakepage', '');
+          }
+        }
+      }
+      const ost = document.createElement('style');
+      ost.textContent = '@media print{' +
+        '[data-om-oversized]{break-inside:auto !important;page-break-inside:auto !important}' +
+        '[data-om-fakepage]{break-after:auto !important;page-break-after:auto !important}' +
+        (pageInset ? '[data-om-fakepage]{padding:0 !important;background:none !important}' : '') +
+        '}';
+      document.head.appendChild(ost);
+    }
+  } catch (e) {}
+  // macOS Preview renders Skia-PDF Luminosity soft-masks as opaque grey boxes;
+  // swap the CSS that triggers them for Preview-safe forms.
+  try {
+    for (const el of document.body.querySelectorAll('*')) {
+      const cs = getComputedStyle(el);
+
+      if (cs.boxShadow !== 'none' && cs.filter === 'none') {
+        const outs = [], kept = [];
+        for (const s of cs.boxShadow.split(/,(?![^(]*[)])/)) {
+          const t = s.trim();
+          const m = t.match(/^(rgba?[(][^)]+[)]) (-?[0-9.]+px) (-?[0-9.]+px) ([0-9.]+px) -?[0-9.]+px$/);
+          if (m && parseFloat(m[4]) > 0) outs.push('drop-shadow(' + m[2] + ' ' + m[3] + ' ' + m[4] + ' ' + m[1] + ')');
+          else kept.push(t);
+        }
+        if (outs.length) {
+          el.style.setProperty('filter', outs.join(' '), 'important');
+          el.style.setProperty('box-shadow', kept.join(', ') || 'none', 'important');
+        }
+      }
+
+      const mask = cs.maskImage && cs.maskImage !== 'none' ? cs.maskImage : cs.webkitMaskImage;
+      if (mask && mask !== 'none' && cs.filter === 'none') el.style.setProperty('filter', 'opacity(1)', 'important');
+    }
+  } catch (e) {}
+  setTimeout(() => { try { window.print(); } catch (e) {} }, 200);
+})();
+</script>
+</body>
+</html>

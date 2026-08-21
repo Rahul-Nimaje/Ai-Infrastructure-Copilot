@@ -1,0 +1,15 @@
+[project]
+name = "py-shared"
+version = "0.1.0"
+description = "Shared Pydantic schemas and enums for api and ai-orchestrator"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.7,<3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["py_shared*"]
