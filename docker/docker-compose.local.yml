@@ -29,7 +29,7 @@ services:
     env_file:
       - ../../apps/api/.env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://copilot:copilot@postgres:5432/copilot
+      - DATABASE_URL=postgresql+asyncpg://copilot:copilot@postgres:5434/copilot
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres:
