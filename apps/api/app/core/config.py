@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     jwt_secret: str = "dev-secret-change-me"
-    jwt_access_token_ttl_seconds: int = 60 * 60 * 24 * 7
+    jwt_access_token_ttl_seconds: int = 60 * 15  # 15 minutes — short TTL ensures permission changes propagate quickly via refresh
     jwt_refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30
 
     # MVP simplification #3 (plan): local envelope encryption instead of HashiCorp Vault.

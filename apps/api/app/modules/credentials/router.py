@@ -49,3 +49,18 @@ async def create_credential(
             username=payload.username,
         )
     }
+
+
+@router.delete("/{credential_id}", status_code=status.HTTP_200_OK)
+async def delete_credential(
+    credential_id: uuid.UUID,
+    user=Depends(require_permission("servers.write")),
+    db: AsyncSession = Depends(get_org_db),
+):
+    success = await service.delete_credential(
+        db, organization_id=uuid.UUID(user.organization_id), credential_id=credential_id
+    )
+    if not success:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
+    return {"message": "Credential deleted successfully"}
+

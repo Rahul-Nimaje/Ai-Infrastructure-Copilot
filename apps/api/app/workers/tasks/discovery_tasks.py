@@ -22,12 +22,16 @@ logger = logging.getLogger(__name__)
 
 
 def _run_async(coro):
-    """Run an async function in a new event loop (Celery workers are sync)."""
-    loop = asyncio.new_event_loop()
+    """Run an async function cleanly in an event loop (Celery workers are sync)."""
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 
 @celery_app.task(
@@ -46,7 +50,7 @@ def run_network_scan_task(self, scan_id: str, organization_id: str, actor_id: st
     blindly retry multiple times."""
     logger.info("Running network scan %s for org %s", scan_id, organization_id)
 
-    async def _run():
+    async def _do_scan():
         from app.core.db import SessionLocal
         from app.modules.discovery.service import run_discovery_scan_task
 
@@ -58,28 +62,30 @@ def run_network_scan_task(self, scan_id: str, organization_id: str, actor_id: st
         candidate_ids = await run_discovery_scan_task(
             SessionLocal, uuid.UUID(organization_id), uuid.UUID(scan_id), uuid.UUID(actor_id),
         )
+        
+        if candidate_ids:
+            await emit_to_org(
+                "discovery.scan.progress",
+                {"scan_id": scan_id, "phase": "scanning", "devices_total": len(candidate_ids), "devices_processed": 0},
+                organization_id=organization_id,
+            )
+        else:
+            await emit_to_org(
+                "discovery.scan.completed",
+                {"scan_id": scan_id, "status": "completed"},
+                organization_id=organization_id,
+            )
         return candidate_ids
 
     try:
-        candidate_ids = _run_async(_run())
+        candidate_ids = _run_async(_do_scan())
     except Exception as exc:
         logger.exception("Network scan %s failed", scan_id)
         raise self.retry(exc=exc)
 
     if candidate_ids:
-        _run_async(emit_to_org(
-            "discovery.scan.progress",
-            {"scan_id": scan_id, "phase": "scanning", "devices_total": len(candidate_ids), "devices_processed": 0},
-            organization_id=organization_id,
-        ))
         for device_id in candidate_ids:
             run_device_inventory_task.delay(str(device_id), organization_id, scan_id, actor_id)
-    else:
-        _run_async(emit_to_org(
-            "discovery.scan.completed",
-            {"scan_id": scan_id, "status": "completed"},
-            organization_id=organization_id,
-        ))
 
     logger.info("Network scan %s discovery phase complete (%d device(s) queued for full inventory)", scan_id, len(candidate_ids or []))
 
@@ -94,18 +100,17 @@ def run_network_scan_task(self, scan_id: str, organization_id: str, actor_id: st
     soft_time_limit=150,
 )
 def run_device_inventory_task(self, device_id: str, organization_id: str, scan_id: str | None = None, actor_id: str | None = None):
-    """Full-mode credentialed inventory collection for a single device.
-    Retry/backoff is Celery's own (`self.retry`), replacing the manual
-    `2**attempt` sleep loop the pre-Celery implementation reimplemented."""
+    """Full-mode credentialed inventory collection for a single device."""
     logger.info("Collecting inventory for device %s (org %s)", device_id, organization_id)
 
-    async def _run():
+    async def _do_inventory():
         from app.core.db import SessionLocal
+        from sqlalchemy import select
+        from app.models.device import Device
         from app.modules.discovery.service import run_inventory_collection
 
-        acquired = await try_acquire_slot(organization_id)
-        if not acquired:
-            raise RuntimeError("org concurrency cap reached")
+        from app.core.scan_concurrency import wait_for_slot
+        await wait_for_slot(organization_id)
         try:
             async with SessionLocal() as db:
                 await run_inventory_collection(
@@ -114,17 +119,6 @@ def run_device_inventory_task(self, device_id: str, organization_id: str, scan_i
                 )
         finally:
             await release_slot(organization_id)
-
-    try:
-        _run_async(_run())
-    except Exception as exc:
-        logger.exception("Device inventory collection failed for %s (attempt %d)", device_id, self.request.retries + 1)
-        raise self.retry(exc=exc)
-
-    async def _emit():
-        from app.core.db import SessionLocal
-        from sqlalchemy import select
-        from app.models.device import Device
 
         async with SessionLocal() as db:
             device_q = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
@@ -139,5 +133,10 @@ def run_device_inventory_task(self, device_id: str, organization_id: str, scan_i
                 organization_id=organization_id,
             )
 
-    _run_async(_emit())
+    try:
+        _run_async(_do_inventory())
+    except Exception as exc:
+        logger.exception("Device inventory collection failed for %s (attempt %d)", device_id, self.request.retries + 1)
+        raise self.retry(exc=exc)
+
     logger.info("Device %s inventory collection complete", device_id)

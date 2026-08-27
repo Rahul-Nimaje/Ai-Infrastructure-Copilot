@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { Device } from "@ai-infra-copilot/shared-types";
 import {
   Network,
@@ -69,6 +71,7 @@ import { ScanControlPanel } from "@/features/discovery/components/ScanControlPan
 import { computeDeviceStats } from "@/features/discovery/utils/scan-stats";
 
 export function DiscoveryDashboard() {
+  const router = useRouter();
   const { toast } = useToast();
 
   // Search & Filter States
@@ -87,7 +90,17 @@ export function DiscoveryDashboard() {
   // Selected device for side drawer detail view
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
 
-  // 1. Query Devices List (Paginated, Filtered)
+  // 1. Query Active/Past Scans (Poll only when a scan is active)
+  const { data: scansList = [], isLoading: isScansLoading } = useGetDiscoveryScansQuery(undefined, {
+    pollingInterval: 0,
+  });
+
+  // Check if there is an active running scan right now
+  const activeScan = scansList.find((s) =>
+    ["pending", "discovering", "identifying", "scanning", "running"].includes(s.status)
+  );
+
+  // 2. Query Devices List (Paginated, Filtered, poll only when scan is active)
   const { data: devicesData, isLoading: isDevicesLoading, refetch: refetchDevices } = useGetDiscoveryDevicesQuery({
     page,
     size: pageSize,
@@ -100,17 +113,13 @@ export function DiscoveryDashboard() {
     scan_status: scanStatus,
     response_time: responseTime,
     last_seen: lastSeen,
-  }, { pollingInterval: 5000 });
+  }, { pollingInterval: activeScan ? 5000 : 0 });
 
-  // 2. Query Active/Past Scans
-  const { data: scansList = [], isLoading: isScansLoading } = useGetDiscoveryScansQuery(undefined, {
-    pollingInterval: 3000,
+  // Re-query scans with polling enabled when scan is active
+  const { data: _scansListActive } = useGetDiscoveryScansQuery(undefined, {
+    pollingInterval: activeScan ? 3000 : 0,
+    skip: !activeScan,
   });
-
-  // Check if there is an active running scan right now
-  const activeScan = scansList.find((s) =>
-    ["pending", "discovering", "identifying", "scanning", "running"].includes(s.status)
-  );
 
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -250,7 +259,9 @@ export function DiscoveryDashboard() {
         <div className="flex items-center gap-2.5">
           {getDeviceIcon(device.device_type)}
           <div>
-            <div className="font-semibold text-foreground text-sm">{device.name}</div>
+            <Link href={`/discovery/devices/${device.id}`} className="font-semibold text-foreground text-sm hover:text-primary hover:underline transition-colors">
+              {device.name}
+            </Link>
             <div className="text-muted-foreground font-mono text-[10px]">{device.ip_address || "—"}</div>
           </div>
         </div>
@@ -306,14 +317,22 @@ export function DiscoveryDashboard() {
         title="Network Device Discovery"
         description="Scan subnet ranges to progressively discover, identify, and inventory infrastructure assets."
       >
-        <Button
-          onClick={() => handleCollectAllInventory()}
-          disabled={isCollectAllPending}
-          className="gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-xs font-bold shadow-md text-white"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${isCollectAllPending ? "animate-spin" : ""}`} />
-          Collect All Inventory
-        </Button>
+        <div className="flex items-center gap-2">
+          <Link href="/settings">
+            <Button variant="outline" size="sm" className="gap-1.5 text-xs font-semibold">
+              <KeyRound className="h-3.5 w-3.5 text-amber-500" />
+              Manage Credentials
+            </Button>
+          </Link>
+          <Button
+            onClick={() => handleCollectAllInventory()}
+            disabled={isCollectAllPending}
+            className="gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-xs font-bold shadow-md text-white"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isCollectAllPending ? "animate-spin" : ""}`} />
+            Collect All Inventory
+          </Button>
+        </div>
       </PageHeader>
 
       {/* Discovery Dashboard Stats using StatCard */}
@@ -452,8 +471,7 @@ export function DiscoveryDashboard() {
             loadingMessage="Loading discovered devices inventory..."
             rowKey={(device: Device) => device.id}
             onRowClick={(device: Device) => {
-              setSelectedDevice(device);
-              setActiveTab("overview");
+              router.push(`/discovery/devices/${device.id}`);
             }}
             isRowActive={(device: Device) => selectedDevice?.id === device.id}
             page={page}
@@ -478,6 +496,14 @@ export function DiscoveryDashboard() {
       >
         {selectedDevice && (
           <>
+            <div className="flex justify-end pb-2">
+              <Link href={`/discovery/devices/${selectedDevice.id}`}>
+                <Button variant="outline" size="sm" className="gap-1.5 text-xs font-bold text-primary border-primary/30 hover:bg-primary/10 shadow-sm">
+                  Open Dedicated Device Page ↗
+                </Button>
+              </Link>
+            </div>
+
             {/* Overview Tab */}
             {activeTab === "overview" && (
               <div className="space-y-6">

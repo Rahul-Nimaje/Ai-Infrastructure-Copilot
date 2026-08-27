@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Play, Square } from "lucide-react";
+import { Play, Square, Wifi } from "lucide-react";
 import type { DeviceScan } from "@ai-infra-copilot/shared-types";
 
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { TextField, FormField } from "@/components/common/FormField";
 import { startScanSchema, type StartScanFormValues } from "@/schemas/discovery-scan.schema";
 import { SCAN_MODE_OPTIONS, DEFAULT_TARGET_RANGE, DEFAULT_SCAN_MODE } from "@/utils/constants";
 import { useScanProgress } from "@/features/discovery/hooks/useScanProgress";
+import { useGetLocalSubnetQuery } from "@/features/discovery/services/discovery-api";
 
 interface ScanControlPanelProps {
   activeScan: DeviceScan | undefined;
@@ -32,12 +33,30 @@ export function ScanControlPanel({
 }: ScanControlPanelProps) {
   const [confirmStopOpen, setConfirmStopOpen] = useState(false);
   const { scanProgress, progressPct, isLive } = useScanProgress();
+  const { data: localSubnetData } = useGetLocalSubnetQuery();
 
   const { control, handleSubmit, watch, setValue } = useForm<StartScanFormValues>({
     resolver: zodResolver(startScanSchema),
     defaultValues: { target_range: DEFAULT_TARGET_RANGE, scan_mode: DEFAULT_SCAN_MODE },
   });
   const selectedMode = watch("scan_mode");
+  const currentTarget = watch("target_range");
+
+  // Auto-set target range from auto-detected network subnet when loaded
+  useEffect(() => {
+    if (localSubnetData?.suggested_target || localSubnetData?.cidr_range) {
+      const autoTarget = localSubnetData.suggested_target || localSubnetData.cidr_range;
+      if (!currentTarget || currentTarget === DEFAULT_TARGET_RANGE) {
+        setValue("target_range", autoTarget);
+      }
+    }
+  }, [localSubnetData, currentTarget, setValue]);
+
+  const handleAutoDetect = () => {
+    if (localSubnetData?.suggested_target || localSubnetData?.cidr_range) {
+      setValue("target_range", localSubnetData.suggested_target || localSubnetData.cidr_range);
+    }
+  };
 
   const handleConfirmStop = async () => {
     await onStopScan();
@@ -51,14 +70,29 @@ export function ScanControlPanel({
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit(onStartScan)} className="space-y-4">
-          <TextField
-            name="target_range"
-            control={control}
-            label="Subnet Target (CIDR range)"
-            required
-            placeholder="10.20.4.0/24"
-            disabled={!!activeScan}
-          />
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-semibold text-foreground">Subnet Target (CIDR range) *</label>
+              {localSubnetData?.local_ip && (
+                <button
+                  type="button"
+                  onClick={handleAutoDetect}
+                  className="flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+                  title={`Detected server IP: ${localSubnetData.local_ip}`}
+                >
+                  <Wifi className="h-3 w-3 text-emerald-500" />
+                  Auto-detect IP ({localSubnetData.cidr_range})
+                </button>
+              )}
+            </div>
+            <TextField
+              name="target_range"
+              control={control}
+              required
+              placeholder="192.168.0.0/24"
+              disabled={!!activeScan}
+            />
+          </div>
 
           <FormField label="Scan Mode" required>
             <div className="grid grid-cols-1 gap-2">

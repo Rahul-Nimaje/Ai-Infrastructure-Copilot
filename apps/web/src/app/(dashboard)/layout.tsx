@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
+import { usePathname } from "next/navigation";
 import { MfaSetupCard } from "@/components/mfa-setup-card";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
@@ -11,7 +12,10 @@ import { SocketProvider } from "@/providers/socket-provider";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const accessToken = useAuthStore((s) => s.accessToken);
+
+  const isDeviceDetailPage = pathname?.includes("/devices/");
 
   useEffect(() => {
     if (!accessToken) {

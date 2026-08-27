@@ -31,6 +31,13 @@ export const discoveryApi = apiSlice.injectEndpoints({
       query: () => "/api/v1/discovery/scan",
       providesTags: ["Scans"],
     }),
+    getLocalSubnet: builder.query<{ local_ip: string; cidr_range: string; suggested_target: string }, void>({
+      query: () => "/api/v1/discovery/local-subnet",
+    }),
+    getDeviceById: builder.query<Device, string>({
+      query: (deviceId) => `/api/v1/devices/${deviceId}`,
+      providesTags: (_r, _e, deviceId) => [{ type: "Devices", id: deviceId }],
+    }),
     getDeviceHardware: builder.query<DeviceHardwareProfile, string>({
       query: (deviceId) => `/api/v1/devices/${deviceId}/hardware`,
       providesTags: (_r, _e, deviceId) => [{ type: "Devices", id: deviceId }],
@@ -92,6 +99,8 @@ export const discoveryApi = apiSlice.injectEndpoints({
 export const {
   useGetDiscoveryDevicesQuery,
   useGetDiscoveryScansQuery,
+  useGetLocalSubnetQuery,
+  useGetDeviceByIdQuery,
   useGetDeviceHardwareQuery,
   useGetDeviceSoftwareQuery,
   useGetDeviceHistoryQuery,

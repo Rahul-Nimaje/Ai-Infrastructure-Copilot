@@ -41,8 +41,36 @@ def _enqueue_scan(scan_id: uuid.UUID, organization_id: str, actor_id: str) -> No
 
 
 def _enqueue_device_inventory(device_id: uuid.UUID, organization_id: str, actor_id: str) -> None:
-    from app.workers.tasks.discovery_tasks import run_device_inventory_task
-    run_device_inventory_task.delay(str(device_id), organization_id, None, actor_id)
+    try:
+        from app.workers.tasks.discovery_tasks import run_device_inventory_task
+        run_device_inventory_task.delay(str(device_id), organization_id, None, actor_id)
+    except Exception:
+        pass
+
+    import asyncio
+    async def _bg_run():
+        from app.core.db import SessionLocal
+        from app.modules.discovery.service import run_inventory_collection
+        try:
+            async with SessionLocal() as db:
+                await run_inventory_collection(
+                    db,
+                    uuid.UUID(organization_id),
+                    device_id,
+                    uuid.UUID(actor_id) if actor_id else None
+                )
+        except Exception as err:
+            import logging
+            logging.getLogger(__name__).warning("Asyncio inventory collection failed for device %s: %s", device_id, err)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_bg_run())
+    except RuntimeError:
+        asyncio.run(_bg_run())
+
+import socket
+import ipaddress
 
 # New router for explicit /network routes
 network_router = APIRouter(prefix="/api/v1/network", tags=["network"])
@@ -55,14 +83,41 @@ devices_router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 discovery_router = APIRouter(prefix="/api/v1/discovery", tags=["discovery"])
 
 
+@network_router.get("/local-subnet")
+@discovery_router.get("/local-subnet")
+async def get_local_network_subnet(
+    current_user: AccessTokenClaims = Depends(require_permission("discovery.read")),
+):
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        net = str(ipaddress.IPv4Interface(f"{local_ip}/24").network)
+        return {
+            "local_ip": local_ip,
+            "cidr_range": net,
+            "suggested_target": f"{local_ip.rsplit('.', 1)[0]}.0/24",
+        }
+    except Exception:
+        return {
+            "local_ip": "127.0.0.1",
+            "cidr_range": "192.168.1.0/24",
+            "suggested_target": "192.168.1.0/24",
+        }
+
+
+
 # --- New Network Routes ---
 
 async def _require_full_scan_permission_if_needed(payload: ScanStartRequest, current_user: AccessTokenClaims) -> None:
-    if payload.scan_mode == ScanMode.FULL and "discovery.inventory.collect" not in current_user.permissions:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "FORBIDDEN", "message": "Missing permission: discovery.inventory.collect (required for Full scans)"},
-        )
+    if payload.scan_mode == ScanMode.FULL:
+        has_perm = "discovery.inventory.collect" in current_user.permissions or "discovery.scan" in current_user.permissions
+        if not has_perm:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "FORBIDDEN", "message": "Missing permission: discovery.inventory.collect or discovery.scan (required for Full scans)"},
+            )
 
 
 @network_router.post("/scan", response_model=NetworkScanResponse, status_code=status.HTTP_202_ACCEPTED)

@@ -1,10 +1,14 @@
 import asyncio
+import logging
 import socket
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
 import uuid
 import re
 import shutil
+import subprocess
 import ipaddress
 import json
 import xml.etree.ElementTree as ET
@@ -1178,9 +1182,56 @@ _LINUX_INVENTORY_SCRIPT = (
 )
 
 
+def _is_local_ip(ip_str: str) -> bool:
+    if not ip_str or ip_str in ("127.0.0.1", "127.0.1.1", "localhost", "0.0.0.0"):
+        return True
+    try:
+        addrs = {"127.0.0.1", "127.0.1.1", "0.0.0.0", "localhost"}
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            addrs.add(info[4][0])
+        addrs.update(socket.gethostbyname_ex(socket.gethostname())[2])
+        try:
+            res = subprocess.run(["ip", "-o", "addr", "show"], capture_output=True, text=True, timeout=2)
+            for line in res.stdout.splitlines():
+                m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+                if m:
+                    addrs.add(m.group(1))
+        except Exception:
+            pass
+        return ip_str in addrs
+    except Exception:
+        return False
+
+
+
 async def collect_linux_inventory(target: SshTarget) -> str | None:
-    stdout, _stderr, rc = await ssh_client.run_command(target, _LINUX_INVENTORY_SCRIPT)
-    return stdout if rc == 0 and stdout.strip() else None
+    if target.username and (target.password or target.private_key):
+        stdout, stderr, rc = await ssh_client.run_command(target, _LINUX_INVENTORY_SCRIPT)
+        if rc == 0 and stdout and stdout.strip():
+            return stdout
+        err_msg = stderr.strip() or f"SSH exited with code {rc}"
+        raise RuntimeError(err_msg)
+
+    if _is_local_ip(target.host):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/bash", "-c", _LINUX_INVENTORY_SCRIPT,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            out, _ = await proc.communicate()
+            if out and out.decode("utf-8", errors="replace").strip():
+                return out.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
+    stdout, stderr, rc = await ssh_client.run_command(target, _LINUX_INVENTORY_SCRIPT)
+    if rc == 0 and stdout and stdout.strip():
+        return stdout
+    err_msg = stderr.strip() or f"SSH exited with code {rc}"
+    raise RuntimeError(err_msg)
+
+
+
 
 
 def parse_linux_inventory(raw_stdout: str, device_ip: str) -> dict:
@@ -1713,6 +1764,15 @@ async def collect_network_device_inventory(snmp_target: SnmpTarget) -> dict:
     }
 
 
+async def _finalize_device_scan(db: AsyncSession, device_id: uuid.UUID) -> None:
+    scan_history_q = await db.execute(
+        select(DeviceScanHistory.scan_id).where(DeviceScanHistory.device_id == device_id).order_by(DeviceScanHistory.created_at.desc()).limit(1)
+    )
+    latest_scan_id = scan_history_q.scalar_one_or_none()
+    if latest_scan_id:
+        await finalize_scan_if_complete(db, latest_scan_id)
+
+
 async def run_inventory_collection(
     db: AsyncSession,
     organization_id: uuid.UUID,
@@ -1750,81 +1810,104 @@ async def run_inventory_collection(
         device.auth_error = "Device has no known IP address to connect to"
         device.scan_status = DeviceScanStatus.FAILED.value
         await db.commit()
+        await _finalize_device_scan(db, device.id)
         return
 
-    protocol_type = "snmp"
-    if dev_type == DeviceType.WINDOWS.value:
-        protocol_type = "winrm"
-    elif dev_type in (DeviceType.LINUX.value, DeviceType.MACOS.value, DeviceType.VIRTUAL_MACHINE.value, DeviceType.DOCKER_HOST.value):
-        protocol_type = "ssh"
+    is_target_local = _is_local_ip(ip)
 
-    matching_creds = {
-        "winrm": [c for c in credentials if c.credential_type == CredentialType.WINRM.value],
-        "ssh": [c for c in credentials if c.credential_type in (CredentialType.SSH_PASSWORD.value, CredentialType.SSH_KEY.value)],
-        "snmp": [c for c in credentials if c.credential_type in (CredentialType.SNMP_V2C.value, CredentialType.SNMP_V3.value)],
-    }[protocol_type]
+    ssh_creds = [c for c in credentials if c.credential_type in (CredentialType.SSH_PASSWORD.value, CredentialType.SSH_KEY.value)]
+    winrm_creds = [c for c in credentials if c.credential_type == CredentialType.WINRM.value]
+    snmp_creds = [c for c in credentials if c.credential_type in (CredentialType.SNMP_V2C.value, CredentialType.SNMP_V3.value)]
 
-    if not matching_creds:
+    open_ports_list = device.open_ports.get("ports", []) if (device.open_ports and isinstance(device.open_ports, dict)) else []
+
+    if dev_type == DeviceType.WINDOWS.value or 5985 in open_ports_list or 5986 in open_ports_list:
+        ordered_creds = winrm_creds + ssh_creds + snmp_creds
+    elif dev_type in (DeviceType.LINUX.value, DeviceType.MACOS.value, DeviceType.VIRTUAL_MACHINE.value, DeviceType.DOCKER_HOST.value, "server") or 22 in open_ports_list or ssh_creds:
+        ordered_creds = ssh_creds + winrm_creds + snmp_creds
+    else:
+        ordered_creds = snmp_creds + ssh_creds + winrm_creds
+
+    credential_candidates: list[tuple[str, dict]] = []
+    for cred in ordered_creds:
+        try:
+            sec = await resolve_credential_secret(db, organization_id=organization_id, credential_id=cred.id)
+            credential_candidates.append((cred.credential_type, sec))
+        except Exception:
+            pass
+
+    if not credential_candidates:
+        if is_target_local:
+            credential_candidates.append((CredentialType.SSH_PASSWORD.value, {}))
+        else:
+            credential_candidates.append((CredentialType.SNMP_V2C.value, {"secret": "public", "username": "public"}))
+
+    if not credential_candidates:
         device.auth_success = False
-        device.auth_error = f"No {protocol_type.upper()} credentials configured for organization"
+        device.auth_error = "No credentials configured for organization"
         device.scan_status = DeviceScanStatus.CREDENTIALS_REQUIRED.value
         await db.commit()
-        return
-
-    cred = matching_creds[0]
-    try:
-        secret_dict = await resolve_credential_secret(db, organization_id=organization_id, credential_id=cred.id)
-    except Exception as e:
-        device.auth_success = False
-        device.auth_error = f"Failed to decrypt credentials: {str(e)}"
-        device.scan_status = DeviceScanStatus.FAILED.value
-        await db.commit()
+        await _finalize_device_scan(db, device.id)
         return
 
     dynamic_data: dict | None = None
-    try:
-        if protocol_type == "winrm":
-            port = 5986 if device.open_ports and 5986 in device.open_ports.get("ports", []) else 5985
-            target = WinRmTarget(host=ip, username=secret_dict.get("username", ""), password=secret_dict.get("secret", ""), port=port, ssl=(port == 5986))
-            raw = await collect_windows_inventory(target)
-            if raw:
-                dynamic_data = parse_windows_inventory(raw, ip)
-        elif protocol_type == "ssh":
-            target = SshTarget(
-                host=ip, username=secret_dict.get("username", ""),
-                password=secret_dict.get("secret") if cred.credential_type == CredentialType.SSH_PASSWORD.value else None,
-                private_key=secret_dict.get("secret") if cred.credential_type == CredentialType.SSH_KEY.value else None,
-                port=22,
-            )
-            raw = await collect_linux_inventory(target)
-            if raw:
-                dynamic_data = parse_linux_inventory(raw, ip)
-                if dynamic_data.get("system_uuid"):
-                    device.uuid = dynamic_data["system_uuid"]
-        elif protocol_type == "snmp":
-            snmp_target = SnmpTarget(
-                host=ip,
-                community=secret_dict.get("secret") if cred.credential_type == CredentialType.SNMP_V2C.value else None,
-                version="3" if cred.credential_type == CredentialType.SNMP_V3.value else "2c",
-                username=secret_dict.get("username"),
-            )
-            dynamic_data = await collect_network_device_inventory(snmp_target)
-    except Exception as e:
-        device.auth_success = False
-        device.auth_error = f"{protocol_type.upper()} connection failed: {str(e)}"
-        device.scan_status = DeviceScanStatus.FAILED.value
-        await db.commit()
-        return
+    last_error: str | None = None
+
+    for cred_type, secret_dict in credential_candidates:
+        try:
+            if cred_type == CredentialType.WINRM.value:
+                port = 5986 if device.open_ports and 5986 in device.open_ports.get("ports", []) else 5985
+                target = WinRmTarget(host=ip, username=secret_dict.get("username", ""), password=secret_dict.get("secret", ""), port=port, ssl=(port == 5986))
+                raw = await collect_windows_inventory(target)
+                if raw:
+                    dynamic_data = parse_windows_inventory(raw, ip)
+            elif cred_type in (CredentialType.SSH_PASSWORD.value, CredentialType.SSH_KEY.value):
+                target = SshTarget(
+                    host=ip, username=secret_dict.get("username", ""),
+                    password=secret_dict.get("secret") if cred_type == CredentialType.SSH_PASSWORD.value else None,
+                    private_key=secret_dict.get("secret") if cred_type == CredentialType.SSH_KEY.value else None,
+                    port=22,
+                )
+                raw = await collect_linux_inventory(target)
+                if raw:
+                    dynamic_data = parse_linux_inventory(raw, ip)
+                    if dynamic_data.get("system_uuid"):
+                        device.uuid = dynamic_data["system_uuid"]
+            elif cred_type in (CredentialType.SNMP_V2C.value, CredentialType.SNMP_V3.value):
+                snmp_target = SnmpTarget(
+                    host=ip,
+                    community=secret_dict.get("secret") if cred_type == CredentialType.SNMP_V2C.value else None,
+                    version="3" if cred_type == CredentialType.SNMP_V3.value else "2c",
+                    username=secret_dict.get("username"),
+                )
+                dynamic_data = await collect_network_device_inventory(snmp_target)
+
+            if dynamic_data:
+                break
+        except Exception as e:
+            last_error = str(e)
+            logger.info("Credential attempt (%s user %s) failed for %s: %s", cred_type, secret_dict.get("username"), ip, e)
 
     if not dynamic_data:
         device.auth_success = False
-        device.auth_error = f"Connected but received no usable {protocol_type.upper()} response"
+        device.auth_error = f"Connection failed: {last_error}" if last_error else "Connected but received no usable telemetry response"
         device.scan_status = DeviceScanStatus.FAILED.value
         await db.commit()
+        await _finalize_device_scan(db, device.id)
         return
 
     device.auth_success = True
     device.auth_error = None
+
+    if dynamic_data and dynamic_data.get("inv"):
+        inv_info = dynamic_data["inv"]
+        if inv_info.get("os_name"):
+            device.operating_system = inv_info["os_name"]
+            os_lower = inv_info["os_name"].lower()
+            if any(k in os_lower for k in ("ubuntu", "debian", "linux", "centos", "redhat", "fedora", "alpine", "arch")):
+                device.device_type = DeviceType.LINUX.value
+            elif any(k in os_lower for k in ("windows", "win")):
+                device.device_type = DeviceType.WINDOWS.value
 
     new_inv = dict(dynamic_data.get("inv") or {})
     new_inv.pop("computer_name", None)

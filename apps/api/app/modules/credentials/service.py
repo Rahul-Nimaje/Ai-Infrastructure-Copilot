@@ -51,3 +51,17 @@ async def resolve_credential_secret(db: AsyncSession, *, organization_id: uuid.U
     )
     credential = result.scalar_one()
     return decrypt_secret(credential.vault_path)
+
+
+async def delete_credential(db: AsyncSession, *, organization_id: uuid.UUID, credential_id: uuid.UUID) -> bool:
+    result = await db.execute(
+        select(Credential).where(Credential.id == credential_id, Credential.organization_id == organization_id, Credential.deleted_at.is_(None))
+    )
+    cred = result.scalar_one_or_none()
+    if not cred:
+        return False
+    from datetime import datetime
+    cred.deleted_at = datetime.utcnow()
+    await db.commit()
+    return True
+

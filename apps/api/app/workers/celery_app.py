@@ -12,6 +12,10 @@ celery_app = Celery(
     "ai_infra_copilot",
     broker=settings.redis_url,
     backend=settings.redis_url,
+    include=[
+        "app.workers.tasks.discovery_tasks",
+        "app.workers.tasks.document_tasks",
+    ],
 )
 
 celery_app.conf.update(

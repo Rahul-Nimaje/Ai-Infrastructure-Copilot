@@ -73,7 +73,8 @@ export const apiSlice = createApi({
     "Permissions",
     "Users",
     "Departments",
-    "Designations"
+    "Designations",
+    "Credentials"
   ],
   endpoints: () => ({}),
 });

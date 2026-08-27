@@ -40,7 +40,7 @@ module.exports = {
       name: 'celery-worker',
       cwd: './apps/api',
       script: './.venv/bin/celery',
-      args: '-A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q documents',
+      args: '-A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q discovery,documents',
       interpreter: 'none',
       autorestart: true,
       watch: false,

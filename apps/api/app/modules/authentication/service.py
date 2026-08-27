@@ -41,6 +41,11 @@ PHASE_1_PERMISSIONS = [
     ("tasks.read", "PowerShell Generator"),
     ("tasks.approve", "PowerShell Generator"),
     ("ai_chat.use", "AI Chat"),
+    ("discovery.read", "Network Discovery"),
+    ("discovery.scan", "Network Discovery"),
+    ("discovery.inventory.read", "Network Discovery"),
+    ("discovery.inventory.collect", "Network Discovery"),
+    ("discovery.credentials.assign", "Network Discovery"),
 ]
 
 

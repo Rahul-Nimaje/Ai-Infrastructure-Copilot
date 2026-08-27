@@ -1,86 +1,78 @@
-"""Thin SSH wrapper for read-only device-inventory collection. Mirrors
-app/core/winrm_client.py's shape (a dataclass target + a run function), but
-shells to the system `ssh` binary via asyncio subprocess rather than a Python
-SSH library — consistent with how nmap is already invoked in
-app/modules/discovery/service.py.
-
-Read-only inventory collection only. This module must never be reused by
-app/execution/runner.py's mutation path (see that module's docstring for the
-human-approval boundary) — every caller here only ever runs read commands
-(cat/ls/ps/systemctl list-units/etc.), never anything that changes device
-state.
-"""
+"""SSH client wrapper using Paramiko / asyncio for device inventory collection."""
 from __future__ import annotations
 
 import asyncio
+import io
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SshTarget:
     host: str
     username: str
-    password: str | None = None  # SSH_PASSWORD credentials — requires sshpass
-    private_key: str | None = None  # SSH_KEY credentials — PEM contents
+    password: str | None = None
+    private_key: str | None = None
     port: int = 22
     connect_timeout: int = 5
     command_timeout: int = 30
 
 
-async def run_command(target: SshTarget, command: str) -> tuple[str, str, int]:
-    """Runs `command` over SSH and returns (stdout, stderr, returncode).
-    Async-native (asyncio.create_subprocess_exec) since the `ssh` CLI is
-    already invoked as a subprocess, unlike winrm_client's sync-wrapped shape."""
-    key_path: str | None = None
-    try:
-        base_opts = [
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "BatchMode=yes" if not target.password else "BatchMode=no",
-            "-o", f"ConnectTimeout={target.connect_timeout}",
-            "-p", str(target.port),
-        ]
+def _run_paramiko(target: SshTarget, command: str) -> tuple[str, str, int]:
+    import paramiko
 
-        if target.private_key:
-            fd, key_path = tempfile.mkstemp(prefix="disc-ssh-key-")
-            os.write(fd, target.private_key.encode())
-            os.close(fd)
-            os.chmod(key_path, 0o600)
-            cmd = ["ssh", "-i", key_path, *base_opts, f"{target.username}@{target.host}", command]
-        elif target.password:
-            # sshpass keeps the password out of argv by feeding it via env
-            # var SSHPASS (-e), avoiding it showing up in `ps`.
-            cmd = ["sshpass", "-e", "ssh", *base_opts, f"{target.username}@{target.host}", command]
-        else:
-            cmd = ["ssh", *base_opts, f"{target.username}@{target.host}", command]
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        env = {**os.environ, "SSHPASS": target.password} if target.password and not target.private_key else None
+    kwargs = {
+        "hostname": target.host,
+        "port": target.port,
+        "username": target.username,
+        "timeout": target.connect_timeout,
+        "banner_timeout": target.connect_timeout,
+        "auth_timeout": target.connect_timeout,
+    }
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
+    if target.private_key:
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=target.command_timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return "", f"ssh command timed out after {target.command_timeout}s", -1
+            key_file = io.StringIO(target.private_key)
+            pkey = paramiko.RSAKey.from_private_key(key_file)
+        except Exception:
+            try:
+                key_file = io.StringIO(target.private_key)
+                pkey = paramiko.Ed25519Key.from_private_key(key_file)
+            except Exception:
+                key_file = io.StringIO(target.private_key)
+                pkey = paramiko.ECDSAKey.from_private_key(key_file)
+        kwargs["pkey"] = pkey
+    elif target.password:
+        kwargs["password"] = target.password
 
-        return stdout.decode(errors="replace"), stderr.decode(errors="replace"), proc.returncode or 0
+    try:
+        client.connect(**kwargs)
+        _stdin, stdout_file, stderr_file = client.exec_command(command, timeout=target.command_timeout)
+        stdout = stdout_file.read().decode(errors="replace")
+        stderr = stderr_file.read().decode(errors="replace")
+        exit_code = stdout_file.channel.recv_exit_status()
+        return stdout, stderr, exit_code
     finally:
-        if key_path and os.path.exists(key_path):
-            os.remove(key_path)
+        client.close()
+
+
+async def run_command(target: SshTarget, command: str) -> tuple[str, str, int]:
+    """Runs `command` over SSH using Paramiko thread pool."""
+    try:
+        return await asyncio.to_thread(_run_paramiko, target, command)
+    except Exception as e:
+        logger.warning("Paramiko SSH attempt failed for %s@%s: %s", target.username, target.host, e)
+        return "", f"Authentication failed for user '{target.username}' ({str(e)})", 1
 
 
 async def grab_banner(host: str, port: int = 22, timeout: float = 3.0) -> str | None:
-    """Reads the raw SSH server version banner with no authentication — used
-    by identify_device() to distinguish e.g. Cisco IOS SSH from OpenSSH
-    without needing a credential."""
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
         try:
@@ -88,5 +80,5 @@ async def grab_banner(host: str, port: int = 22, timeout: float = 3.0) -> str | 
             return line.decode(errors="replace").strip() or None
         finally:
             writer.close()
-    except Exception:  # noqa: BLE001 — banner grab is best-effort, absence just means "abstain"
+    except Exception:
         return None
