@@ -69,6 +69,7 @@ def _enqueue_device_inventory(device_id: uuid.UUID, organization_id: str, actor_
     except RuntimeError:
         asyncio.run(_bg_run())
 
+
 import socket
 import ipaddress
 

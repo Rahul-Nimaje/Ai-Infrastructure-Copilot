@@ -1921,7 +1921,19 @@ async def run_inventory_collection(
     new_services = dynamic_data.get("services", [])
     new_processes = dynamic_data.get("processes", [])
     new_security = dynamic_data.get("security", {})
+    new_inv.pop("computer_name", None)
+    computer_name = (dynamic_data.get("inv") or {}).get("computer_name") or device.name
+    new_processors = [{k: v for k, v in p.items() if k != "cpu_load_percent"} for p in dynamic_data.get("processors", [])]
+    new_memory = dynamic_data.get("memory", [])
+    new_storage_raw = dynamic_data.get("storage", [])
+    new_partitions_raw = dynamic_data.get("partitions", [])
+    new_interfaces_raw = dynamic_data.get("interfaces", [])
+    new_software = dynamic_data.get("software", [])
+    new_services = dynamic_data.get("services", [])
+    new_processes = dynamic_data.get("processes", [])
+    new_security = dynamic_data.get("security", {})
 
+>>>>>>> f631419 (feat: implement Celery-based task orchestration for discovery scans and add SNMP credential support)
     # 1. DeviceInventory (1:1)
     inv_q = await db.execute(select(DeviceInventory).where(DeviceInventory.device_id == device.id))
     inv = inv_q.scalar_one_or_none()
